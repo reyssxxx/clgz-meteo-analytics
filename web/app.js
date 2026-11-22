@@ -1104,12 +1104,18 @@ function bindStationSources(main) {
             const response = await fetch('/api/datasets', { method: 'POST', body });
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Не удалось добавить станцию.');
-            toast('Добавлена станция: ' + station.name);
-            if (origin === routeSeq) await switchDataset(data.id);
+            toast('Станция добавлена в «Наборы данных»: ' + station.name);
+            if (origin === routeSeq) {
+              const entry = document.createElement('button');
+              entry.dataset.ds = data.id;
+              entry.textContent = station.name;
+              entry.addEventListener('click', () => switchDataset(data.id));
+              $('.dslist', main).append(entry);
+              button.textContent = 'Добавлено';
+            }
           } catch (error) {
-            toast(error.message, true);
-          } finally {
             button.disabled = false;
+            toast(error.message, true);
           }
         });
       }
