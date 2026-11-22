@@ -184,7 +184,9 @@ Common = dict(
 
 @app.get("/api/public-stations")
 def public_stations():
-    return [{"id": code, "name": name} for code, name in PUBLIC_STATIONS.items()]
+    d = get(CASE_ID)
+    return [{"id": code, "name": name, "added": f"uploads/{name}.csv" in d.files}
+            for code, name in PUBLIC_STATIONS.items()]
 
 
 @app.get("/api/public-stations/{code}/data")
@@ -193,6 +195,16 @@ def public_station_data(code: str):
         raise HTTPException(404, "Станция отсутствует в каталоге.")
     return FileResponse(DATA / "public_stations" / f"{code}.csv", media_type="text/csv",
                         filename=f"{PUBLIC_STATIONS[code]}.csv")
+
+
+@app.post("/api/public-stations/{code}/add")
+def add_public_station(code: str):
+    if code not in PUBLIC_STATIONS:
+        raise HTTPException(404, "Станция отсутствует в каталоге.")
+    name = PUBLIC_STATIONS[code]
+    data = (DATA / "public_stations" / f"{code}.csv").read_bytes()
+    _add_files(CASE_ID, {f"{name}.csv": data}, skip_existing=True)
+    return {"dataset": CASE_ID, "station": name}
 
 @app.get("/api/datasets")
 def datasets():
@@ -252,9 +264,15 @@ def add_files(ds: str, files: list[UploadFile] = File(...)):
         if name in content:
             raise HTTPException(400, f"{name}: имя файла повторяется в загрузке.")
         content[name] = f.file.read()
+    return _add_files(ds, content)
+
+
+def _add_files(ds: str, content: dict[str, bytes], *, skip_existing: bool = False):
     uploads = {f"uploads/{name}": data for name, data in content.items()}
     with UPDATE_LOCK:
         d = get(ds)
+        if skip_existing and all(d.files.get(key) == data for key, data in uploads.items()):
+            return {"added": [], "stations": []}
         updated = Dataset(d.id, d.name, d.files | uploads, dict(d.overrides))
         try:
             updated.build()

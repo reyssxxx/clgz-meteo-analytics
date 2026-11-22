@@ -379,7 +379,7 @@ def quality(raw_station: pd.DataFrame, daily: pd.DataFrame, issues: pd.DataFrame
                "gaps": g.head(200), "gaps_total": len(g), "issue_kinds": kinds,
                "issues": issues.head(300).assign(Параметр=issues["Параметр"].map(label)) if len(issues) else [],
                "issues_total": len(issues),
-               "files": [{"name": n, "summary": r.summary(), "mapping": r.mapping, "time": r.time_columns,
+               "files": [{"name": n, "stations": r.stations, "summary": r.summary(), "mapping": r.mapping, "time": r.time_columns,
                           "station_column": r.station_column, "unmapped": r.unmapped} for n, r in reports.items()]})
 
 

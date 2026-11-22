@@ -1090,28 +1090,22 @@ function bindStationSources(main) {
     try {
       const stations = await api('/api/public-stations', {}, false);
       list.innerHTML = stations.map(s => `<div class="station-source-row"><span>${esc(s.name)}</span>
-        <button type="button" class="btn" data-public-station="${esc(s.id)}">Добавить</button></div>`).join('');
+        <button type="button" class="btn" data-public-station="${esc(s.id)}" ${s.added ? 'disabled' : ''}>${s.added ? 'Добавлено' : 'Добавить'}</button></div>`).join('');
       for (const button of $$('[data-public-station]', list)) {
         button.addEventListener('click', async () => {
           const station = stations.find(s => s.id === button.dataset.publicStation);
           const origin = routeSeq;
           button.disabled = true;
           try {
-            const file = await fetch('/api/public-stations/' + encodeURIComponent(station.id) + '/data');
-            if (!file.ok) throw new Error('Не удалось прочитать данные станции.');
-            const body = new FormData();
-            body.append('files', await file.blob(), station.name + '.csv');
-            const response = await fetch('/api/datasets', { method: 'POST', body });
+            const response = await fetch('/api/public-stations/' + encodeURIComponent(station.id) + '/add',
+              { method: 'POST' });
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Не удалось добавить станцию.');
-            toast('Станция добавлена в «Наборы данных»: ' + station.name);
+            toast('Станция добавлена: ' + station.name);
             if (origin === routeSeq) {
-              const entry = document.createElement('button');
-              entry.dataset.ds = data.id;
-              entry.textContent = station.name;
-              entry.addEventListener('click', () => switchDataset(data.id));
-              $('.dslist', main).append(entry);
-              button.textContent = 'Добавлено';
+              S.ds = data.dataset;
+              await loadMeta();
+              route();
             }
           } catch (error) {
             button.disabled = false;
@@ -1177,7 +1171,10 @@ async function renderData(main) {
       </div>
     </div>
     <div class="stack">
-      ${q.files.map((f, n) => {
+      ${META.stations.map(station => {
+        const files = q.files.filter(f => f.stations.includes(station.id));
+        return `<details class="box station-source station-file-group"><summary>${esc(station.id)}</summary>
+        <div class="stack">${files.map((f, n) => {
         const meta = parseSummary(f.summary);
         const cols = [...f.time, ...(f.station_column ? [f.station_column] : []), ...Object.keys(f.mapping), ...f.unmapped];
         return `<div class="box panel" data-file="${esc(f.name)}">
@@ -1188,6 +1185,7 @@ async function renderData(main) {
           const cur = f.time.includes(col) ? '__time' : col === f.station_column ? '__station' : (f.mapping[col] || '');
           return `<div class="col" title="${esc(col)}">${esc(col)}</div><div class="sel"><select class="field ${cur ? '' : 'unused'}" data-col="${esc(col)}">${roles.map(([k, t]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>`;
         }).join('')}</div></div>`;
+        }).join('')}</div></details>`;
       }).join('')}
     </div>
   </div>
