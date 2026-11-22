@@ -19,13 +19,14 @@ from urllib.parse import quote
 import pandas as pd
 import plotly
 from openpyxl import Workbook
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, FiniteFloat
 
 from . import analytics as A
 from . import forecast as FC
+from . import library
 from . import quality as Q
 from . import recovery as R
 from . import tables as T
@@ -117,14 +118,18 @@ def _load_demos() -> None:
         STORE[CASE_ID] = ds
 
 
-app = FastAPI(title="Метеоаналитика")
+app = FastAPI(title="Библиотека Центрально-Лесного заповедника")
+app.include_router(library.router)
+meteo_router = APIRouter(prefix="/api", dependencies=[Depends(library.require_employee)])
 
 
 @app.middleware("http")
 async def _no_cache_for_ui(request, call_next):
     """Файлы интерфейса не кэшируются: после обновления сервиса браузер сразу берёт новую версию."""
     resp = await call_next(request)
-    if not request.url.path.startswith(("/api/", "/vendor/")):
+    if request.url.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store"
+    elif not request.url.path.startswith("/vendor/") and "Cache-Control" not in resp.headers:
         resp.headers["Cache-Control"] = "no-cache"
     return resp
 
@@ -178,14 +183,14 @@ Common = dict(
 
 # ------------------------------------------------------------------ наборы данных
 
-@app.get("/api/datasets")
+@meteo_router.get("/datasets")
 def datasets():
     if not STORE:
         _load_demos()
     return [{"id": d.id, "name": d.name, "demo": d.id.startswith("demo")} for d in STORE.values()]
 
 
-@app.post("/api/datasets")
+@meteo_router.post("/datasets")
 async def upload(files: list[UploadFile] = File(...)):
     content = {f.filename: await f.read() for f in files}
     ds = Dataset(uuid.uuid4().hex[:10], ", ".join(content)[:80], content)
@@ -223,7 +228,7 @@ def _save_uploads(content: dict[str, bytes]) -> None:
             raise
 
 
-@app.post("/api/datasets/{ds}/files")
+@meteo_router.post("/datasets/{ds}/files")
 def add_files(ds: str, files: list[UploadFile] = File(...)):
     """Новый файл с метеостанции в том же формате дописывается к данным без доработки кода:
     kr1_2026.csv → в ряд «Кр1 (поляна)», ame60_2022.csv → «АМЕ-60», файл другой станции — новая станция.
@@ -263,7 +268,7 @@ class Mapping(BaseModel):
     station: str | None = None
 
 
-@app.post("/api/datasets/{ds}/mapping")
+@meteo_router.post("/datasets/{ds}/mapping")
 def set_mapping(ds: str, m: Mapping):
     with UPDATE_LOCK:
         d = get(ds)
@@ -279,7 +284,7 @@ def set_mapping(ds: str, m: Mapping):
     return {"ok": True}
 
 
-@app.get("/api/meta")
+@meteo_router.get("/meta")
 def meta(ds: str = CASE_ID, clean: bool = True):
     d = get(ds)
     out = V.meta(d.raw, d.dailies(clean))
@@ -290,7 +295,7 @@ def meta(ds: str = CASE_ID, clean: bool = True):
 
 # ------------------------------------------------------------------ экраны
 
-@app.get("/api/overview")
+@meteo_router.get("/overview")
 def overview(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"],
              start: str | None = Common["start"], end: str | None = Common["end"], base: str = Common["base"],
              clean: bool = Common["clean"], fill: bool = Common["fill"]):
@@ -306,7 +311,7 @@ def overview(var: str = "t_air", ds: str = Common["ds"], station: str | None = C
             "ranking": V.ranking(daily, var, s, e, b), "facts": V.facts(daily, var, s, e, b, issues)}
 
 
-@app.get("/api/series")
+@meteo_router.get("/series")
 def series(var: str = "t_air", freq: str = "MS", ds: str = Common["ds"], station: str | None = Common["station"],
            start: str | None = Common["start"], end: str | None = Common["end"], base: str = Common["base"],
            clean: bool = Common["clean"], fill: bool = Common["fill"]):
@@ -314,7 +319,7 @@ def series(var: str = "t_air", freq: str = "MS", ds: str = Common["ds"], station
     return V.series(daily, var, freq, s, e, b)
 
 
-@app.get("/api/trends")
+@meteo_router.get("/trends")
 def trends(var: str = "t_air", month: int | None = None, season: int | None = None, ds: str = Common["ds"],
            station: str | None = Common["station"], start: str | None = Common["start"], end: str | None = Common["end"],
            base: str = Common["base"], clean: bool = Common["clean"], fill: bool = Common["fill"]):
@@ -322,7 +327,7 @@ def trends(var: str = "t_air", month: int | None = None, season: int | None = No
     return V.trends(daily, var, s, e, b, month, season)
 
 
-@app.get("/api/compare")
+@meteo_router.get("/compare")
 def compare(a0: str, a1: str, b0: str, b1: str, var: str = "t_air", ds: str = Common["ds"],
             station: str | None = Common["station"], base: str = Common["base"], clean: bool = Common["clean"],
             fill: bool = Common["fill"]):
@@ -330,7 +335,7 @@ def compare(a0: str, a1: str, b0: str, b1: str, var: str = "t_air", ds: str = Co
     return V.compare(daily, var, (a0, a1), (b0, b1))
 
 
-@app.get("/api/ranking")
+@meteo_router.get("/ranking")
 def ranking(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"],
             start: str | None = Common["start"], end: str | None = Common["end"], base: str = Common["base"],
             clean: bool = Common["clean"], fill: bool = Common["fill"]):
@@ -338,7 +343,7 @@ def ranking(var: str = "t_air", ds: str = Common["ds"], station: str | None = Co
     return V.ranking(daily, var, s, e, b)
 
 
-@app.get("/api/stations")
+@meteo_router.get("/stations")
 def stations(var: str = "t_air", freq: str = "MS", ref: str | None = None, ds: str = Common["ds"],
              station: str | None = Common["station"], start: str | None = Common["start"],
              end: str | None = Common["end"], base: str = Common["base"], clean: bool = Common["clean"],
@@ -350,7 +355,7 @@ def stations(var: str = "t_air", freq: str = "MS", ref: str | None = None, ds: s
     return V.stations_view(d.dailies(clean), st, var, freq, s, e, ref, fr)
 
 
-@app.get("/api/pair")
+@meteo_router.get("/pair")
 def pair(var: str = "t_air", a: str | None = None, b: str | None = None, ds: str = Common["ds"],
          station: str | None = Common["station"], start: str | None = Common["start"], end: str | None = Common["end"],
          base: str = Common["base"], clean: bool = Common["clean"], fill: bool = Common["fill"]):
@@ -373,7 +378,7 @@ def pair(var: str = "t_air", a: str | None = None, b: str | None = None, ds: str
     return out
 
 
-@app.get("/api/forecast")
+@meteo_router.get("/forecast")
 def forecast(ds: str = Common["ds"], station: str | None = Common["station"], base: str = Common["base"]):
     """Прогноз на 7 дней (Open-Meteo) + для контекста средняя температура тех же дат по станции."""
     try:
@@ -394,7 +399,7 @@ def forecast(ds: str = Common["ds"], station: str | None = Common["station"], ba
     return V.js({**f, "context": {"station": st, "days": ctx_rows}})
 
 
-@app.get("/api/agro")
+@meteo_router.get("/agro")
 def agro(ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
          end: str | None = Common["end"], base: str = Common["base"], clean: bool = Common["clean"],
          fill: bool = Common["fill"]):
@@ -404,14 +409,14 @@ def agro(ds: str = Common["ds"], station: str | None = Common["station"], start:
     return out
 
 
-@app.get("/api/quality")
+@meteo_router.get("/quality")
 def quality(ds: str = Common["ds"], station: str | None = Common["station"], clean: bool = Common["clean"]):
     d = get(ds)
     data, daily, issues, sub = d.station(station, clean)
     return V.quality(data, daily, issues, d.reports)
 
 
-@app.get("/api/quality/selection")
+@meteo_router.get("/quality/selection")
 def quality_selection(var: str = "t_air", mode: str = "", ds: str = Common["ds"], station: str | None = Common["station"],
                       start: str | None = Common["start"], end: str | None = Common["end"],
                       base: str = Common["base"], clean: bool = Common["clean"], fill: bool = Common["fill"]):
@@ -440,7 +445,7 @@ def quality_selection(var: str = "t_air", mode: str = "", ds: str = Common["ds"]
                  "source": V.var_meta(source)})
 
 
-@app.get("/api/recovery/preview")
+@meteo_router.get("/recovery/preview")
 def recovery_preview(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"],
                      start: date | None = None, end: date | None = None, clean: bool = Common["clean"]):
     d = get(ds)
@@ -489,7 +494,7 @@ def _recovery_daily(ds, station, var, start, end):
     return d, daily
 
 
-@app.post("/api/recovery/proposal")
+@meteo_router.post("/recovery/proposal")
 def recovery_proposal(request: RecoveryRequest, save: bool = False):
     r = request
     with UPDATE_LOCK:
@@ -520,7 +525,7 @@ def recovery_proposal(request: RecoveryRequest, save: bool = False):
     return {"rows": rows, "skipped": skipped, "saved": count, "preview_token": token}
 
 
-@app.get("/api/recovery/saved")
+@meteo_router.get("/recovery/saved")
 def recovery_saved(station: str, start: date, end: date, ds: str = CASE_ID, var: str = "t_air",
                    resolution: Literal["day", "month"] = "day"):
     d, daily = _recovery_daily(ds, station, var, start, end)
@@ -533,7 +538,7 @@ def recovery_saved(station: str, start: date, end: date, ds: str = CASE_ID, var:
     return V.js({"rows": rows, "observations": {"dates": clock, "values": official.reindex(clock)}})
 
 
-@app.get("/api/recovery/report.xlsx")
+@meteo_router.get("/recovery/report.xlsx")
 def recovery_xlsx(station: str, start: date, end: date, ds: str = CASE_ID, var: str = "t_air"):
     d, daily = _recovery_daily(ds, station, var, start, end)
     rows = R.with_observation_status(R.saved(RECOVERY_STORE, d.id, station, var, start, end), daily, var)
@@ -558,7 +563,7 @@ def recovery_xlsx(station: str, start: date, end: date, ds: str = CASE_ID, var: 
                      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
-@app.get("/api/table")
+@meteo_router.get("/table")
 def table(mode: str = "daily", ds: str = Common["ds"], station: str | None = Common["station"],
           start: str | None = Common["start"], end: str | None = Common["end"], base: str = Common["base"],
           clean: bool = Common["clean"], fill: bool = Common["fill"]):
@@ -570,7 +575,7 @@ def table(mode: str = "daily", ds: str = Common["ds"], station: str | None = Com
     return V.js(T.decade_table(daily, s, e))
 
 
-@app.get("/api/table.xlsx")
+@meteo_router.get("/table.xlsx")
 def table_xlsx(mode: str = "daily", var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"],
                start: str | None = Common["start"], end: str | None = Common["end"], base: str = Common["base"],
                clean: bool = Common["clean"], fill: bool = Common["fill"]):
@@ -595,7 +600,7 @@ def _download(content: bytes | str, filename: str, media: str) -> Response:
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
 
 
-@app.get("/api/report.html")
+@meteo_router.get("/report.html")
 def report_html(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
                 end: str | None = Common["end"], base: str = Common["base"], clean: bool = Common["clean"],
                 fill: bool = Common["fill"]):
@@ -607,7 +612,7 @@ def report_html(var: str = "t_air", ds: str = Common["ds"], station: str | None 
                      "text/html; charset=utf-8")
 
 
-@app.get("/api/report.xlsx")
+@meteo_router.get("/report.xlsx")
 def report_xlsx(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
                 end: str | None = Common["end"], base: str = Common["base"], clean: bool = Common["clean"],
                 fill: bool = Common["fill"]):
@@ -632,8 +637,18 @@ def plotly_js():
 
 
 @app.get("/", response_class=HTMLResponse)
-def index():
-    return (WEB / "index.html").read_text(encoding="utf-8")
+def workspace():
+    return (WEB / "workspace.html").read_text(encoding="utf-8")
 
 
+@app.get("/index.html", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/meteo", response_class=HTMLResponse)
+def index(request: Request):
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    if library.session_account(request) is None:
+        html = html.replace("<body>", "<body data-guest>", 1)
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+app.include_router(meteo_router)
 app.mount("/", StaticFiles(directory=WEB), name="web")

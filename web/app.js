@@ -48,7 +48,7 @@ function toast(msg, err = false) {
 }
 
 // ------------------------------------------------------------------ состояние
-const S = { page: 'overview', ds: 'clgz', station: '', var: 't_air', kind: 'season', y: 0, i: 0,
+const S = { page: 'data', ds: 'clgz', station: '', var: 't_air', kind: 'season', y: 0, i: 0,
   cs: '', ce: '', base: 'all', clean: true, fill: false };
 let META = null;
 
@@ -994,7 +994,7 @@ async function renderForecast(main) {
 // ------------------------------------------------------------------ ДАННЫЕ И ОТЧЁТЫ
 /* Файлы сгруппированы по станциям: сводка по станции и раскрывающийся список файлов;
    сопоставление колонок открывается только у выбранного файла */
-function stationCards(files, roles) {
+function stationCards(files, roles, employee) {
   const order = META.stations.map(s => s.id);
   const groups = {};
   files.forEach((f, n) => { (groups[f.station] = groups[f.station] || []).push({ ...f, n }); });
@@ -1020,9 +1020,9 @@ function stationCards(files, roles) {
             <div class="mapgrid"><div class="head2">Колонка в файле</div><div class="head2">Что в ней</div>
             ${cols.map(col => {
               const cur = f.time.includes(col) ? '__time' : col === f.station_column ? '__station' : (f.mapping[col] || '');
-              return `<div class="col" title="${esc(col)}">${esc(col)}</div><div class="sel"><select class="field ${cur ? '' : 'unused'}" data-col="${esc(col)}">${roles.map(([k, t]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>`;
+              return `<div class="col" title="${esc(col)}">${esc(col)}</div><div class="sel"><select ${employee ? '' : 'disabled'} class="field ${cur ? '' : 'unused'}" data-col="${esc(col)}">${roles.map(([k, t]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>`;
             }).join('')}</div>
-            <div class="actions" style="padding:8px 0 4px"><button class="btn" data-apply="${f.n}">Применить сопоставление</button></div></details>`;
+            <div class="actions" style="padding:8px 0 4px" ${employee ? '' : 'hidden'}><button class="btn" data-apply="${f.n}">Применить сопоставление</button></div></details>`;
         }).join('')}
       </details></div>`;
   }).join('');
@@ -1236,7 +1236,12 @@ async function inspectRecovery(panel, button) {
 }
 
 async function renderData(main) {
-  const [sets, q] = await Promise.all([fetch('/api/datasets').then(r => r.json()), api('/api/quality', {}, false)]);
+  const [sets, q, session] = await Promise.all([
+    fetch('/api/datasets').then(r => r.json()),
+    api('/api/quality', {}, false),
+    fetch('/api/library/session').then(r => r.json()).catch(() => ({})),
+  ]);
+  const employee = Boolean(session.employee);
   const roles = [['', '— не использовать —'], ['__time', 'Дата и время'], ['__station', 'Станция'], ...META.all_variables.map(v => [v.id, `${v.label}, ${v.unit}`])];
   const kinds = Object.entries(q.issue_kinds);
   main.innerHTML = `
@@ -1244,7 +1249,10 @@ async function renderData(main) {
     <div class="stack">
       <div class="box panel"><div class="head"><b>Наборы данных</b></div>
         <div class="dslist">${sets.map(s => `<button data-ds="${s.id}" class="${s.id === S.ds ? 'on' : ''}">${esc(s.name)}</button>`).join('')}</div>
-        <label class="drop" id="drop"><input type="file" id="file" multiple accept=".csv,.txt,.xlsx" hidden>
+        <div class="actions" style="padding:8px 16px"><a class="pill" href="/#weather">Исходные наблюдения</a>
+          <a class="pill" href="/data-request">Запросить данные</a>
+          ${employee ? '<a class="pill" href="/employee/profile">Кабинет сотрудника</a>' : ''}</div>
+        <label class="drop" id="drop" ${employee ? '' : 'hidden'}><input type="file" id="file" multiple accept=".csv,.txt,.xlsx" hidden>
           <b>Добавить файлы с метеостанции</b><br>В том же формате, например kr1_2026.csv или ame60_2022.csv — данные допишутся в ряд станции.<br>Перетащите сюда или нажмите.</label>
       </div>
       <div class="box panel"><div class="head"><b>Отчёты</b></div>
@@ -1252,7 +1260,7 @@ async function renderData(main) {
         <div class="actions" style="padding:8px 16px 0"><a class="btn" href="${apiUrl('/api/report.html')}">${ICON.doc}Отчёт HTML</a>
           <a class="pill" href="${apiUrl('/api/report.xlsx')}">${ICON.dl}Таблицы Excel</a></div>
         <p class="note">Все станции и файлы сразу, без интерфейса: <code>python -m meteo.batch папка</code></p></div>
-      <div class="box panel" id="recovery-panel"><div class="head"><b>Восстановление пропусков</b></div>
+      <div class="box panel" id="recovery-panel" ${employee ? '' : 'hidden'}><div class="head"><b>Восстановление пропусков</b></div>
         <p class="note">${esc(S.station)} · ${esc(varById(S.var).label)} · ${esc(periodLabel())}.
           Черновик содержит интервалы и сведения об источниках. Официальный ряд хранится отдельно.</p>
         <div class="actions recovery-actions">
@@ -1263,7 +1271,7 @@ async function renderData(main) {
       </div>
     </div>
     <div class="stack">
-      ${stationCards(q.files, roles)}
+      ${stationCards(q.files, roles, employee)}
     </div>
   </div>
   <div class="grid2 mt">
@@ -1645,7 +1653,45 @@ function bind() {
   });
 }
 
+function renderGuestData() {
+  if (location.hash !== '#data') history.replaceState(null, '', '#data');
+
+  $$('#nav a[data-page]').forEach(item => {
+    if (item.dataset.page === 'data') {
+      item.classList.add('on');
+      item.href = '#data';
+      item.setAttribute('aria-current', 'page');
+    } else {
+      item.setAttribute('aria-disabled', 'true');
+    }
+  });
+
+  const controls = new Set(CTL.data);
+  $$('#controls [data-ctl]').forEach(item => { item.hidden = !controls.has(item.dataset.ctl); });
+  $$('#controls button, #controls select').forEach(item => { item.disabled = true; });
+  $('#station').add(new Option('—'));
+  $('#var').add(new Option('—'));
+  $('#cur-text').textContent = '—';
+
+  $('#page').innerHTML = `
+    <div class="stack">
+      <section class="box panel">
+        <div class="head"><b>Наборы данных</b></div>
+        <p class="note">Публичных метеоданных пока нет.</p>
+        <div class="actions guest-actions">
+          <a class="pill" href="/data-request">Запросить данные</a>
+          <a class="pill" href="/employee">Вход для сотрудника</a>
+        </div>
+      </section>
+      <section class="box panel">
+        <div class="head"><b>Отчёты</b></div>
+        <p class="note">Отчёты появятся, когда станут доступны данные наблюдений.</p>
+      </section>
+    </div>`;
+}
+
 (async function init() {
+  if (document.body.hasAttribute('data-guest')) { renderGuestData(); return; }
   readHash(); bind();
   try { await loadMeta(); } catch (e) {
     if (S.ds !== 'clgz') { S.ds = 'clgz'; S.station = ''; await loadMeta(); } else { $('#page').innerHTML = empty('Сервер недоступен', e.message); return; }
