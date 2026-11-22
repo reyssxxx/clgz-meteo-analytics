@@ -1090,18 +1090,20 @@ function bindStationSources(main) {
     try {
       const stations = await api('/api/public-stations', {}, false);
       list.innerHTML = stations.map(s => `<div class="station-source-row"><span>${esc(s.name)}</span>
-        <button type="button" class="btn" data-public-station="${esc(s.id)}" ${s.added ? 'disabled' : ''}>${s.added ? 'Добавлено' : 'Добавить'}</button></div>`).join('');
+        <button type="button" class="${s.added ? 'pill' : 'btn'}" data-public-station="${esc(s.id)}"
+          aria-label="${s.added ? 'Удалить' : 'Добавить'}: ${esc(s.name)}">${s.added ? 'Удалить' : 'Добавить'}</button></div>`).join('');
       for (const button of $$('[data-public-station]', list)) {
         button.addEventListener('click', async () => {
           const station = stations.find(s => s.id === button.dataset.publicStation);
           const origin = routeSeq;
           button.disabled = true;
           try {
-            const response = await fetch('/api/public-stations/' + encodeURIComponent(station.id) + '/add',
-              { method: 'POST' });
+            const url = '/api/public-stations/' + encodeURIComponent(station.id);
+            const response = await fetch(station.added ? url : url + '/add',
+              { method: station.added ? 'DELETE' : 'POST' });
             const data = await response.json();
-            if (!response.ok) throw new Error(data.error || 'Не удалось добавить станцию.');
-            toast('Станция добавлена: ' + station.name);
+            if (!response.ok) throw new Error(data.error || 'Не удалось изменить список станций.');
+            toast((station.added ? 'Станция удалена: ' : 'Станция добавлена: ') + station.name);
             if (origin === routeSeq) {
               S.ds = data.dataset;
               await loadMeta();

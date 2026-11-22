@@ -206,6 +206,30 @@ def add_public_station(code: str):
     _add_files(CASE_ID, {f"{name}.csv": data}, skip_existing=True)
     return {"dataset": CASE_ID, "station": name}
 
+
+@app.delete("/api/public-stations/{code}")
+def remove_public_station(code: str):
+    if code not in PUBLIC_STATIONS:
+        raise HTTPException(404, "Станция отсутствует в каталоге.")
+    name = PUBLIC_STATIONS[code]
+    filename = f"{name}.csv"
+    key = f"uploads/{filename}"
+    with UPDATE_LOCK:
+        d = get(CASE_ID)
+        if key in d.files:
+            path = UPLOADS / filename
+            source = DATA / "public_stations" / f"{code}.csv"
+            if d.files[key] != source.read_bytes() or (path.exists() and path.read_bytes() != d.files[key]):
+                raise HTTPException(409, "Под этим именем сохранён другой файл.")
+            files = {k: v for k, v in d.files.items() if k != key}
+            overrides = {k: v for k, v in d.overrides.items() if k != key}
+            updated = Dataset(d.id, d.name, files, overrides)
+            updated.build()
+            path.unlink(missing_ok=True)
+            STORE[CASE_ID] = updated
+    return {"dataset": CASE_ID, "station": name}
+
+
 @app.get("/api/datasets")
 def datasets():
     if not STORE:
