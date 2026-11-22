@@ -297,6 +297,11 @@ td .na, td.na { color: var(--ink-3); }
 
 /* ---------- прогноз ---------- */
 .fcards { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; }
+.forecast-advice { margin-bottom: 14px; }
+.forecast-advice ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 10px; margin: 0; padding: 6px 16px; list-style: none; }
+.forecast-advice li { padding: 10px 12px; border-left: 3px solid #D3A24C; background: #FBF4E6; border-radius: 6px; }
+.forecast-advice li small { display: block; margin-top: 2px; color: var(--ink-2); }
+.forecast-advice li p { margin: 5px 0 0; }
 .fday { padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
 .fday .fd { font-size: 14px; color: var(--ink-2); }
 .fday .ft { display: flex; align-items: baseline; gap: 8px; }

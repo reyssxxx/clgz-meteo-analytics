@@ -850,6 +850,7 @@ const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 async function renderForecast(main) {
   const f = await api('/api/forecast', {}, false);
   const D = f.daily, H = f.hourly, ctx = f.context;
+  const advice = f.recommendations || [];
   const cards = D.time.map((t, k) => {
     const d = parseISO(t), mean = D.temperature_mean[k], c = ctx.days[k];
     const dev = mean !== null && c && c.mean !== null ? mean - c.mean : null;
@@ -861,7 +862,15 @@ async function renderForecast(main) {
       ${dev !== null ? `<div class="fdev ${dev > 1 ? 'warm' : dev < -1 ? 'cold' : ''}">${Math.abs(dev) < 1 ? 'близко к среднему' : `${dev > 0 ? 'теплее' : 'холоднее'} среднего на ${fmt(Math.abs(dev), 1)}°`} · ${yearsLabel(c.years)}</div>` : ''}
     </div>`;
   }).join('');
-  main.innerHTML = `<div class="fcards">${cards}</div>
+  main.innerHTML = `<section class="box panel forecast-advice" aria-labelledby="forecast-advice-title">
+    <div class="head"><b id="forecast-advice-title">Важные рекомендации</b><span>Район заповедника</span></div>
+    ${advice.length ? `<ul>${advice.map(r => `<li>
+      <b>${esc(r.title)}</b><small>${esc(ruDate(r.start, false))}${r.end !== r.start ? ' — ' + esc(ruDate(r.end, false)) : ''}</small>
+      <p>${esc(r.evidence)}</p><p>${esc(r.action)}</p>
+    </li>`).join('')}</ul>` : '<p class="note">По доступным данным условий для предупреждений не выявлено.</p>'}
+    <p class="note">Автоматические подсказки по модели Open-Meteo за последние 14 дней и прогнозу на неделю.</p>
+  </section>
+  <div class="fcards">${cards}</div>
   <div class="grid21 mt">
     <div class="box panel"><div class="tb">${dlBtn('ch-ft', 'прогноз')}</div>
       ${panelTitle('Температура воздуха по часам', 'прогноз на 7 дней и среднее за те же даты', `Пунктир — средняя суточная температура этих дат по станции «${ctx.station}» за выбранный период. В карточках указан вклад по годам для каждой даты. Прогноз получен из Open-Meteo.`)}
