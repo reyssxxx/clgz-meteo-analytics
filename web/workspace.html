@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Библиотека данных — Центрально-Лесной заповедник</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/workspace.css">
+  <script src="/workspace.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="frame topbar-inner">
+      <a class="identity" href="/" aria-label="Библиотека Центрально-Лесного заповедника"><span class="mark" aria-hidden="true"></span> Центрально-Лесной заповедник</a>
+      <a class="staff" id="employee-link" href="/employee">Вход для сотрудника</a>
+    </div>
+  </header>
+  <main class="frame" id="library">
+    <div class="launcher" id="launcher">
+      <h1 tabindex="-1">Библиотека данных</h1>
+      <nav class="sections" id="sections" aria-label="Разделы библиотеки"></nav>
+      <button class="add-program" id="add-program" type="button" aria-label="Добавить программу" title="Добавить программу">+</button>
+    </div>
+    <section class="detail" id="detail" hidden></section>
+  </main>
+  <dialog class="program-dialog" id="program-dialog" aria-labelledby="program-title">
+    <form id="program-form">
+      <h2 id="program-title">Добавить программу</h2>
+      <p>Ссылка сохранится в этом браузере.</p>
+      <label>Название <input name="title" maxlength="100" required autofocus></label>
+      <label>Ссылка <input name="url" type="url" placeholder="https://…" required></label>
+      <p id="program-error" role="alert" hidden></p>
+      <div class="program-actions">
+        <button class="button secondary" id="cancel-program" type="button">Отмена</button>
+        <button class="button" type="submit">Добавить</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

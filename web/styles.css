@@ -385,3 +385,11 @@ table.dt tbody tr.mh td.first { position: sticky; left: 0; }
 .recovery-form button { justify-self: start; }
 .recovery-form textarea { width: 100%; resize: vertical; }
 .recovery-form[hidden] { display: none; }
+
+.workspace-link { display: grid; place-items: center; padding: 0 17px; border-right: 1px solid #ffffff40; color: inherit; text-decoration: none; font-size: 24px; }
+.workspace-link:hover { background: #ffffff20; }
+.workspace-link:focus-visible { outline: 2px solid white; outline-offset: -4px; }
+
+[data-guest] .top nav a[aria-disabled="true"] { opacity: .63; cursor: default; }
+[data-guest] .controls :disabled { cursor: default; }
+.guest-actions { padding: 4px 16px 12px; }
