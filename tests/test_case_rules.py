@@ -250,15 +250,16 @@ def test_public_station_joins_case_and_is_available_after_reload(tmp_path, monke
     monkeypatch.setattr(api, "CASE_DIR", case_dir)
     monkeypatch.setattr(api, "UPLOADS", case_dir / "uploads")
     monkeypatch.setattr(api, "STORE", {})
-    result = api.add_public_station("USW00094728")
+    monkeypatch.setattr(api, "target_dataset", lambda request: api.CASE_ID)   # сотрудник
+    result = api.add_public_station("USW00094728", None)
     assert result["dataset"] == api.CASE_ID
-    assert api.add_public_station("USW00094728") == result
+    assert api.add_public_station("USW00094728", None) == result
     api.STORE.clear()
     case = api.get(api.CASE_ID)
     assert set(case.raw.station) == {"АМЕ-60", result["station"]}
     assert list(case.reports[f"uploads/{result['station']}.csv"].stations) == [result["station"]]
-    api.remove_public_station("USW00094728")
-    api.remove_public_station("USW00094728")
+    api.remove_public_station("USW00094728", None)
+    api.remove_public_station("USW00094728", None)
     api.STORE.clear()
     assert api.get(api.CASE_ID).raw.station.unique().tolist() == ["АМЕ-60"]
-    assert api.add_public_station("USW00094728") == result
+    assert api.add_public_station("USW00094728", None) == result

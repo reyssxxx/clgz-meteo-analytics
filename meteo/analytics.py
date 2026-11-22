@@ -576,7 +576,10 @@ def deseasonalize(wide: pd.DataFrame) -> pd.DataFrame:
 
 
 def station_correlation(dailies: dict[str, pd.DataFrame], var: str) -> pd.DataFrame:
-    return deseasonalize(station_matrix(dailies, var)).corr(min_periods=60)
+    wide = station_matrix(dailies, var)
+    if wide.empty:
+        return pd.DataFrame()
+    return deseasonalize(wide).corr(min_periods=60)
 
 
 def pettitt(x: pd.Series) -> dict:

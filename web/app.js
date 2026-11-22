@@ -51,6 +51,7 @@ function toast(msg, err = false) {
 const S = { page: 'data', ds: 'clgz', station: '', var: 't_air', kind: 'season', y: 0, i: 0,
   cs: '', ce: '', base: 'all', clean: true, fill: false };
 let META = null;
+const WS = { employee: true, dataset: 'clgz', ready: true };   // кто работает и с каким набором данных
 
 function readHash() {
   const [page, q] = location.hash.slice(1).split('?');
@@ -59,6 +60,7 @@ function readHash() {
   for (const k of ['ds', 'station', 'var', 'kind', 'cs', 'ce', 'base']) if (p.has(k)) S[k] = p.get(k);
   for (const k of ['y', 'i']) if (p.has(k)) S[k] = Number(p.get(k));
   for (const k of ['clean', 'fill']) if (p.has(k)) S[k] = p.get(k) === '1';
+  if (!WS.employee) S.ds = WS.dataset;
 }
 function writeHash() {
   const p = new URLSearchParams({ ds: S.ds, station: S.station, var: S.var, kind: S.kind, y: S.y, i: S.i,
@@ -340,13 +342,13 @@ const stationChanges = typeof BroadcastChannel === 'function' ? new BroadcastCha
 let metadataRefresh = 0;
 
 async function refreshCaseStations() {
-  if (S.ds !== 'clgz') return;
+  if (S.ds !== WS.dataset) return;
   const refresh = ++metadataRefresh;
   const params = new URLSearchParams({ ds: S.ds, clean: S.clean });
   const response = await fetch('/api/meta?' + params, { cache: 'no-store' });
   if (!response.ok) throw new Error('Не удалось обновить список станций.');
   const meta = await response.json();
-  if (refresh !== metadataRefresh || S.ds !== 'clgz') return;
+  if (refresh !== metadataRefresh || S.ds !== WS.dataset) return;
   applyMeta(meta);
   await route();
 }
@@ -1300,6 +1302,14 @@ async function inspectRecovery(panel, button) {
   }
 }
 
+function publicCatalogHTML() {
+  return `<details class="station-source" id="public-station-catalog" ${UI.publicCatalogOpen ? 'open' : ''}>
+    <summary>Добавить из доступных метеостанций</summary>
+    <p>Открытые суточные данные NOAA GHCN Daily за 2024–2025 гг.</p>
+    <div id="public-station-list" aria-live="polite"></div>
+  </details>`;
+}
+
 function requestFormHTML() {
   return `<details class="station-source">
     <summary>Запросить метеоданные</summary>
@@ -1377,6 +1387,7 @@ function bindStationSources(main) {
             if (!response.ok) throw new Error(data.error || 'Не удалось изменить список станций.');
             toast((station.added ? 'Станция удалена: ' : 'Станция добавлена: ') + station.name);
             stationChanges?.postMessage(data.dataset);
+            if (!WS.employee) { location.reload(); return; }
             if (origin === routeSeq) S.ds = data.dataset;
             await refreshCaseStations();
           } catch (error) {
@@ -1420,11 +1431,7 @@ async function renderData(main) {
           <b>Добавить файлы с метеостанции</b><br>В том же формате, например kr1_2026.csv или ame60_2022.csv — данные допишутся в ряд станции.<br>Перетащите сюда или нажмите.</label>
         <div class="station-sources">
           ${requestFormHTML()}
-          <details class="station-source" id="public-station-catalog" ${UI.publicCatalogOpen ? 'open' : ''}>
-            <summary>Добавить из доступных метеостанций</summary>
-            <p>Открытые суточные данные NOAA GHCN Daily за 2024–2025 гг.</p>
-            <div id="public-station-list" aria-live="polite"></div>
-          </details>
+          ${publicCatalogHTML()}
         </div>
       </div>
       <div class="box panel"><div class="head"><b>Отчёты</b></div>
@@ -1854,8 +1861,8 @@ function renderGuestData() {
     <div class="stack">
       <section class="box panel">
         <div class="head"><b>Наборы данных</b></div>
-        <p class="note">Публичных метеоданных пока нет. Оставьте запрос, и сотрудник заповедника ответит на почту.</p>
-        <div class="station-sources">${requestFormHTML()}</div>
+        <p class="note">У вас пока нет метеоданных. Добавьте открытые метеостанции или запросите данные у организации, и откроются таблицы, графики и тренды.</p>
+        <div class="station-sources">${publicCatalogHTML()}${requestFormHTML()}</div>
         <div class="actions guest-actions">
           <a class="pill" href="/employee">Вход для сотрудника</a>
         </div>
@@ -1865,14 +1872,16 @@ function renderGuestData() {
         <p class="note">Отчёты появятся, когда станут доступны данные наблюдений.</p>
       </section>
     </div>`;
-  bindRequestForm($('#page'));
+  bindStationSources($('#page'));
 }
 
 (async function init() {
-  if (document.body.hasAttribute('data-guest')) { renderGuestData(); return; }
+  try { Object.assign(WS, await (await fetch('/api/workspace', { cache: 'no-store' })).json()); } catch { /* остаёмся в режиме сотрудника */ }
+  S.ds = WS.dataset;
+  if (!WS.ready) { document.body.setAttribute('data-guest', ''); renderGuestData(); return; }
   readHash(); bind();
   try { await loadMeta(); } catch (e) {
-    if (S.ds !== 'clgz') { S.ds = 'clgz'; S.station = ''; await loadMeta(); } else { $('#page').innerHTML = empty('Сервер недоступен', e.message); return; }
+    if (S.ds !== WS.dataset) { S.ds = WS.dataset; S.station = ''; await loadMeta(); } else { $('#page').innerHTML = empty('Сервер недоступен', e.message); return; }
   }
   route();
 })();

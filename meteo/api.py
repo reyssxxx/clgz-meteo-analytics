@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 import threading
 import uuid
 from io import BytesIO
@@ -124,7 +125,44 @@ def _load_demos() -> None:
 
 app = FastAPI(title="Библиотека Центрально-Лесного заповедника")
 app.include_router(library.router)
-meteo_router = APIRouter(prefix="/api", dependencies=[Depends(library.require_employee)])
+GUEST_COOKIE = "clgz_guest"
+GUEST_PREFIX = "guest-"
+GUEST_NAME = "Мои метеоданные"
+MAX_GUESTS = 100
+
+
+def guest_dataset(request: Request) -> str | None:
+    token = request.cookies.get(GUEST_COOKIE, "")
+    return GUEST_PREFIX + token if re.fullmatch(r"[0-9a-f]{24}", token) else None
+
+
+def workspace_access(request: Request) -> None:
+    """Сотрудник работает с данными заповедника. Посетитель видит только свой набор из открытых станций."""
+    ds = request.path_params.get("ds") or request.query_params.get("ds")
+    path = request.url.path
+    if library.session_account(request) is not None:
+        if ds and ds.startswith(GUEST_PREFIX):
+            raise HTTPException(403, "Набор данных недоступен.")
+        return
+    own = guest_dataset(request)
+    if path.startswith("/api/recovery") or (request.method != "GET" and not path.startswith("/api/public-stations")):
+        raise HTTPException(403, "Это действие доступно сотруднику заповедника.")
+    if path == "/api/datasets" or path.startswith("/api/public-stations"):
+        return
+    if not own or ds != own:
+        raise HTTPException(403, "Набор данных недоступен.")
+
+
+def target_dataset(request: Request) -> str:
+    if library.session_account(request) is not None:
+        return CASE_ID
+    own = guest_dataset(request)
+    if not own:
+        raise HTTPException(403, "Обновите страницу и повторите.")
+    return own
+
+
+meteo_router = APIRouter(prefix="/api", dependencies=[Depends(workspace_access)])
 
 
 @app.middleware("http")
@@ -188,9 +226,9 @@ Common = dict(
 # ------------------------------------------------------------------ наборы данных
 
 @meteo_router.get("/public-stations")
-def public_stations():
-    d = get(CASE_ID)
-    return [{"id": code, "name": name, "added": f"uploads/{name}.csv" in d.files}
+def public_stations(request: Request):
+    d = STORE.get(target_dataset(request))
+    return [{"id": code, "name": name, "added": bool(d) and f"uploads/{name}.csv" in d.files}
             for code, name in PUBLIC_STATIONS.items()]
 
 
@@ -203,43 +241,52 @@ def public_station_data(code: str):
 
 
 @meteo_router.post("/public-stations/{code}/add")
-def add_public_station(code: str):
+def add_public_station(code: str, request: Request):
     if code not in PUBLIC_STATIONS:
         raise HTTPException(404, "Станция отсутствует в каталоге.")
+    ds = target_dataset(request)
     name = PUBLIC_STATIONS[code]
     data = (DATA / "public_stations" / f"{code}.csv").read_bytes()
-    _add_files(CASE_ID, {f"{name}.csv": data}, skip_existing=True)
-    return {"dataset": CASE_ID, "station": name}
+    _add_files(ds, {f"{name}.csv": data}, skip_existing=True)
+    return {"dataset": ds, "station": name}
 
 
 @meteo_router.delete("/public-stations/{code}")
-def remove_public_station(code: str):
+def remove_public_station(code: str, request: Request):
     if code not in PUBLIC_STATIONS:
         raise HTTPException(404, "Станция отсутствует в каталоге.")
+    ds = target_dataset(request)
     name = PUBLIC_STATIONS[code]
     filename = f"{name}.csv"
     key = f"uploads/{filename}"
     with UPDATE_LOCK:
-        d = get(CASE_ID)
-        if key in d.files:
+        d = STORE.get(ds)
+        if d and key in d.files:
             path = UPLOADS / filename
             source = DATA / "public_stations" / f"{code}.csv"
-            if d.files[key] != source.read_bytes() or (path.exists() and path.read_bytes() != d.files[key]):
+            if d.files[key] != source.read_bytes() or (ds == CASE_ID and path.exists() and path.read_bytes() != d.files[key]):
                 raise HTTPException(409, "Под этим именем сохранён другой файл.")
             files = {k: v for k, v in d.files.items() if k != key}
             overrides = {k: v for k, v in d.overrides.items() if k != key}
-            updated = Dataset(d.id, d.name, files, overrides)
-            updated.build()
-            path.unlink(missing_ok=True)
-            STORE[CASE_ID] = updated
-    return {"dataset": CASE_ID, "station": name}
+            if not files and ds.startswith(GUEST_PREFIX):
+                STORE.pop(ds, None)
+            else:
+                updated = Dataset(d.id, d.name, files, overrides)
+                updated.build()
+                if ds == CASE_ID:
+                    path.unlink(missing_ok=True)
+                STORE[ds] = updated
+    return {"dataset": ds, "station": name}
 
 
 @meteo_router.get("/datasets")
-def datasets():
+def datasets(request: Request):
     if not STORE:
         _load_demos()
-    return [{"id": d.id, "name": d.name, "demo": d.id.startswith("demo")} for d in STORE.values()]
+    employee = library.session_account(request) is not None
+    own = guest_dataset(request)
+    return [{"id": d.id, "name": d.name, "demo": d.id.startswith("demo")} for d in STORE.values()
+            if (not d.id.startswith(GUEST_PREFIX) if employee else d.id == own)]
 
 
 @meteo_router.post("/datasets")
@@ -299,10 +346,11 @@ def add_files(ds: str, files: list[UploadFile] = File(...)):
 def _add_files(ds: str, content: dict[str, bytes], *, skip_existing: bool = False):
     uploads = {f"uploads/{name}": data for name, data in content.items()}
     with UPDATE_LOCK:
-        d = get(ds)
-        if skip_existing and all(d.files.get(key) == data for key, data in uploads.items()):
+        d = STORE.get(ds) if ds.startswith(GUEST_PREFIX) else get(ds)
+        files, overrides = (d.files, d.overrides) if d else ({}, {})
+        if skip_existing and all(files.get(key) == data for key, data in uploads.items()):
             return {"added": [], "stations": []}
-        updated = Dataset(d.id, d.name, d.files | uploads, dict(d.overrides))
+        updated = Dataset(ds, d.name if d else GUEST_NAME, files | uploads, dict(overrides))
         try:
             updated.build()
             for name in uploads:
@@ -315,6 +363,10 @@ def _add_files(ds: str, content: dict[str, bytes], *, skip_existing: bool = Fals
                 _save_uploads(content)
             except OSError as e:
                 raise HTTPException(500, "Не удалось сохранить файлы на диск.") from e
+        if ds not in STORE:
+            guests = [k for k in STORE if k.startswith(GUEST_PREFIX)]
+            if ds.startswith(GUEST_PREFIX) and len(guests) >= MAX_GUESTS:
+                STORE.pop(guests[0], None)
         STORE[ds] = updated
     return {"added": list(content), "stations": sorted({station_from_filename(n) for n in content})}
 
@@ -696,6 +748,20 @@ def plotly_js():
     return FileResponse(PLOTLY_JS, media_type="text/javascript", headers={"Cache-Control": "max-age=86400"})
 
 
+@app.get("/api/workspace")
+def workspace_info(request: Request):
+    """Кто открыл метеоаналитику и с каким набором данных он работает."""
+    if library.session_account(request) is not None:
+        return JSONResponse({"employee": True, "dataset": CASE_ID, "ready": True}, headers={"Cache-Control": "no-store"})
+    own = guest_dataset(request)
+    token = None if own else uuid.uuid4().hex[:24]
+    own = own or GUEST_PREFIX + token
+    response = JSONResponse({"employee": False, "dataset": own, "ready": own in STORE}, headers={"Cache-Control": "no-store"})
+    if token:
+        response.set_cookie(GUEST_COOKIE, token, max_age=30 * 24 * 3600, httponly=True, samesite="lax")
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
 def workspace():
     return (WEB / "workspace.html").read_text(encoding="utf-8")
@@ -705,8 +771,6 @@ def workspace():
 @app.get("/meteo", response_class=HTMLResponse)
 def index(request: Request):
     html = (WEB / "index.html").read_text(encoding="utf-8")
-    if library.session_account(request) is None:
-        html = html.replace("<body>", "<body data-guest>", 1)
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
