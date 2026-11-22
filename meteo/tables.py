@@ -28,7 +28,7 @@ COLUMNS = [
     ("t_min", "Температура воздуха, °C", "мин.", "mean"),
     ("rh", "Влажность, %", "средняя", "mean"),
     ("wind_speed", "Ветер", "скорость, м/с", "mean"),
-    ("wind_gust", "Ветер", "порыв, м/с", "max"),
+    ("wind_gust", "Ветер", "средний порыв, м/с", "mean"),
     ("wind_dir", "Ветер", "направление, °", "circmean"),
     ("soil_05", "Температура почвы, °C", "5 см", "mean"),
     ("soil_10", "Температура почвы, °C", "10 см", "mean"),
@@ -67,33 +67,39 @@ def _values(d: pd.DataFrame, cols: list[dict]) -> dict:
     return {c["key"]: _agg(d[c["key"]], c["how"]) for c in cols}
 
 
-def _month_rows(daily: pd.DataFrame, ms: pd.Timestamp, cols: list[dict]) -> tuple[list[dict], dict]:
+def _month_rows(daily: pd.DataFrame, ms: pd.Timestamp, cols: list[dict], start=None, end=None) -> tuple[list[dict], dict]:
     """Декады и месяц для одного календарного месяца. Месячное значение — только при валидном месяце
     (для каждого параметра отдельно)."""
     me = ms + pd.offsets.MonthEnd(0)
     d = daily.reindex(pd.date_range(ms, me, freq="D"))
+    selected = d.loc[start:end]
     rows = []
     for k in (1, 2, 3):
-        part = d[[decade(x.day) == k for x in d.index]]
+        part = selected[[decade(x.day) == k for x in selected.index]]
+        if part.empty:
+            continue
         n = {c["key"]: int(part[c["key"]].notna().sum()) for c in cols}
-        rows.append({"kind": "decade", "label": f"{k}-я декада", "values": _values(part, cols), "days": n,
-                     "of": len(part)})
+        rows.append({"kind": "decade", "decade": k, "label": f"{k}-я декада", "values": _values(part, cols), "days": n,
+                     "of": len(part), "start_day": part.index[0].day, "end_day": part.index[-1].day})
     month_vals, month_ok = {}, {}
     for c in cols:
         ok = bool(CV.monthly_valid_from_daily(d[c["key"]]).iloc[0])
         month_ok[c["key"]] = ok
-        month_vals[c["key"]] = _agg(d[c["key"]], c["how"]) if ok else np.nan
-    rows.append({"kind": "month", "label": f"{MONTHS[ms.month - 1].capitalize()} {ms.year}", "values": month_vals,
-                 "valid": month_ok, "days": {c["key"]: int(d[c["key"]].notna().sum()) for c in cols}, "of": len(d)})
+        month_vals[c["key"]] = _agg(selected[c["key"]], c["how"]) if ok else np.nan
+    partial = len(selected) != len(d)
+    label = ("За выбранные дни" if partial else f"{MONTHS[ms.month - 1].capitalize()} {ms.year}")
+    rows.append({"kind": "month", "label": label, "partial": partial, "values": month_vals,
+                 "valid": month_ok, "days": {c["key"]: int(selected[c["key"]].notna().sum()) for c in cols},
+                 "of": len(selected)})
     return rows, month_vals
 
 
-def daily_table(raw_station: pd.DataFrame, daily: pd.DataFrame, month_start) -> dict:
+def daily_table(raw_station: pd.DataFrame, daily: pd.DataFrame, month_start, station: str | None = None) -> dict:
     """Суточная таблица за месяц."""
     ms = pd.Timestamp(month_start).to_period("M").to_timestamp()
     me = ms + pd.offsets.MonthEnd(0)
     cols = _cols(daily)
-    rule = CV.day_rule(raw_station.index)
+    rule = CV.day_rule(raw_station.index, station)
     counts = CV.day_counts(raw_station.loc[ms:me + pd.Timedelta("1D") - pd.Timedelta("1ns")].index, rule)
     d = daily.reindex(pd.date_range(ms, me, freq="D"))
     rows = []
@@ -110,10 +116,12 @@ def daily_table(raw_station: pd.DataFrame, daily: pd.DataFrame, month_start) -> 
         ext["t_max"] = {"value": d["t_max"].max(), "date": d["t_max"].idxmax().strftime("%d.%m")}
     if "t_min" in d and d["t_min"].notna().any():
         ext["t_min"] = {"value": d["t_min"].min(), "date": d["t_min"].idxmin().strftime("%d.%m")}
-    if "wind_gust" in d and d["wind_gust"].notna().any():
-        ext["wind_gust"] = {"value": d["wind_gust"].max(), "date": d["wind_gust"].idxmax().strftime("%d.%m")}
+    gust_max = d.get("wind_gust_max", d.get("wind_gust"))
+    if gust_max is not None and gust_max.notna().any():
+        ext["wind_gust"] = {"value": gust_max.max(), "date": gust_max.idxmax().strftime("%d.%m")}
     return {"mode": "daily", "title": f"{MONTHS[ms.month - 1].capitalize()} {ms.year}", "columns": cols,
             "rows": rows, "summary": summary, "extremes": ext, "rule": rule.describe(),
+            "coverage_label": "Часов" if rule.mode == "hours" else "Сроков",
             "complete_days": int(sum(r["complete"] for r in rows)), "days": len(rows),
             "has_data": bool(len(dd))}
 
@@ -125,22 +133,23 @@ def decade_table(daily: pd.DataFrame, start, end) -> dict:
     months = pd.date_range(start.to_period("M").to_timestamp(), end, freq="MS")
     blocks, monthly = [], {}
     for ms in months:
-        rows, mv = _month_rows(daily, ms, cols)
+        rows, mv = _month_rows(daily, ms, cols, start, end)
         blocks.append({"month": ms.strftime("%Y-%m"), "label": f"{MONTHS[ms.month - 1].capitalize()} {ms.year}",
                        "rows": rows})
         monthly[ms] = mv
     mdf = pd.DataFrame(monthly).T if monthly else pd.DataFrame()
     total = {}
+    full_year = start.month == 1 and start.day == 1 and end == pd.Timestamp(start.year, 12, 31)
     for c in cols:
         s = mdf[c["key"]] if c["key"] in mdf else pd.Series(dtype=float)
         # итог — по валидным месяцам; для полного года — только если валидны все 12
-        if len(months) == 12 and s.notna().sum() < 12:
+        if full_year and s.notna().sum() < 12:
             total[c["key"]] = np.nan
         else:
             total[c["key"]] = _agg(s, c["how"] if c["how"] != "mean" else "mean")
     n_valid = {c["key"]: int(mdf[c["key"]].notna().sum()) if c["key"] in mdf else 0 for c in cols}
     return {"mode": "decades", "title": f"{start:%d.%m.%Y} — {end:%d.%m.%Y}", "columns": cols, "blocks": blocks,
-            "total": {"label": "Год" if len(months) == 12 and start.month == 1 else "Период", "values": total,
+            "total": {"label": "Год" if full_year else "Период", "values": total,
                       "valid_months": n_valid, "months": len(months)}}
 
 
@@ -166,7 +175,9 @@ def to_excel(tab: dict, station: str) -> bytes:
     ws["A2"].font = grey
     ws.append([])
     # двухуровневая шапка
-    first = ["Дата" if tab["mode"] == "daily" else "Период"] + [c["group"] for c in cols] + (["Сроков"] if tab["mode"] == "daily" else [])
+    first = ["Дата" if tab["mode"] == "daily" else "Период"] + [c["group"] for c in cols]
+    if tab["mode"] == "daily":
+        first.append(tab["coverage_label"])
     second = [""] + [c["label"] for c in cols] + ([""] if tab["mode"] == "daily" else [])
     ws.append(first)
     ws.append(second)
@@ -202,8 +213,6 @@ def to_excel(tab: dict, station: str) -> bytes:
     if tab["mode"] == "daily":
         for row in tab["rows"]:
             put(row["label"], row["values"], extra=f"{row['obs']} из {row['of_obs']}", greyed=not row["complete"])
-            if row["date"][-2:] in ("10", "20") or row is tab["rows"][-1]:
-                pass
         for s in tab["summary"]:
             put(s["label"] if s["kind"] == "decade" else f"Среднее за месяц", s["values"],
                 fill_month if s["kind"] == "month" else fill_dec, extra="")
@@ -213,7 +222,12 @@ def to_excel(tab: dict, station: str) -> bytes:
     else:
         for b in tab["blocks"]:
             for s in b["rows"]:
-                put(f"{b['label']}, {s['label']}" if s["kind"] == "decade" else b["label"], s["values"],
+                label = b["label"]
+                if s["kind"] == "decade":
+                    label = f"{label}, {s['label']} ({s['start_day']}–{s['end_day']})"
+                elif s["partial"]:
+                    label = f"{label}, {s['label'].lower()}"
+                put(label, s["values"],
                     fill_month if s["kind"] == "month" else None)
         put(tab["total"]["label"], tab["total"]["values"], fill_month)
     ws.column_dimensions["A"].width = 26

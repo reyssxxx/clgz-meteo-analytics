@@ -18,7 +18,8 @@ def _layout(fig: go.Figure, title: str, ytitle: str = "", height: int = 420) -> 
     return fig
 
 
-def timeseries(agg: pd.DataFrame, var: str, norm: pd.Series | None = None) -> go.Figure:
+def timeseries(agg: pd.DataFrame, var: str, norm: pd.Series | None = None,
+               years: pd.Series | None = None) -> go.Figure:
     fig = go.Figure()
     meta = VARIABLES[var]
     if var == "t_air" and {"t_min", "t_max"} <= set(agg.columns):
@@ -30,7 +31,9 @@ def timeseries(agg: pd.DataFrame, var: str, norm: pd.Series | None = None) -> go
     else:
         fig.add_trace(go.Scatter(x=agg.index, y=agg[var], name=meta.label, line=dict(color=MAIN, width=1.6)))
     if norm is not None:
-        fig.add_trace(go.Scatter(x=norm.index, y=norm, name="Среднее", line=dict(color=MUTED, dash="dash")))
+        fig.add_trace(go.Scatter(x=norm.index, y=norm, name="Среднее за выбранный период",
+                                 customdata=years, line=dict(color=MUTED, dash="dash"),
+                                 hovertemplate="%{y:.1f} (%{customdata} лет)<extra></extra>" if years is not None else None))
     return _layout(fig, label(var), meta.unit)
 
 
@@ -40,8 +43,9 @@ def anomaly_bars(anom: pd.DataFrame, var: str) -> go.Figure:
     up_is_warm = var not in ("precip", "rh", "snow_depth", "snowfall")
     colors = np.where(a >= 0, WARM if up_is_warm else COLD, COLD if up_is_warm else WARM)
     fig = go.Figure(go.Bar(x=anom.index, y=a, marker_color=colors, name="Отклонение",
-                           customdata=np.c_[anom["value"], anom["norm"]],
-                           hovertemplate="%{x|%Y-%m}: %{y:+.2f}<br>факт %{customdata[0]:.1f}, среднее %{customdata[1]:.1f}<extra></extra>"))
+                           customdata=np.c_[anom["value"], anom["norm"], anom["years"]],
+                           hovertemplate="%{x|%Y-%m}: %{y:+.2f}<br>факт %{customdata[0]:.1f}, "
+                           "среднее %{customdata[1]:.1f} (%{customdata[2]} лет)<extra></extra>"))
     if len(a) > 36:
         fig.add_trace(go.Scatter(x=anom.index, y=a.rolling(12, center=True, min_periods=6).mean(),
                                  name="Скользящее среднее (12 мес.)", line=dict(color="#333", width=2)))
@@ -51,11 +55,13 @@ def anomaly_bars(anom: pd.DataFrame, var: str) -> go.Figure:
 def anomaly_heatmap(anom: pd.DataFrame, var: str) -> go.Figure:
     t = anom.assign(Год=anom.index.year, Месяц=anom.index.month).pivot_table(index="Год", columns="Месяц", values="anomaly")
     t = t.reindex(columns=range(1, 13))
+    years = anom.groupby(anom.index.month)["years"].first().reindex(range(1, 13), fill_value=0)
     lim = np.nanpercentile(np.abs(t.to_numpy()), 98) if t.notna().any().any() else 1
     reverse = var in ("precip", "rh", "snow_depth", "snowfall")
     fig = go.Figure(go.Heatmap(z=t.to_numpy(), x=MONTHS, y=t.index, zmid=0, zmin=-lim, zmax=lim,
                                colorscale="RdBu" if reverse else "RdBu_r",
-                               hovertemplate="%{y} %{x}: %{z:+.2f}<extra></extra>",
+                               customdata=np.broadcast_to(years.to_numpy(), t.shape),
+                               hovertemplate="%{y} %{x}: %{z:+.2f}<br>лет в среднем: %{customdata}<extra></extra>",
                                colorbar=dict(title=VARIABLES[var].unit)))
     fig.update_yaxes(autorange="reversed")
     return _layout(fig, f"Аномалии по месяцам: {VARIABLES[var].label}", "", height=max(320, 18 * len(t) + 120))
@@ -167,19 +173,22 @@ def homogeneity_chart(diff: pd.Series, r: dict, var: str, target: str, ref: str)
     return _layout(fig, f"Разность «{target} − {ref}» по годам", meta.unit, height=320)
 
 
-def climate_diagram(norms: pd.DataFrame, title: str = "Годовой ход (среднее за выбранный период)") -> go.Figure:
+def climate_diagram(norms: pd.DataFrame, title: str = "Годовой ход (среднее за выбранный период)",
+                    years: pd.DataFrame | None = None) -> go.Figure:
     """Температура (линия, левая ось) и осадки (столбики, правая ось) по месяцам."""
     fig = go.Figure()
     if "precip" in norms:
         fig.add_trace(go.Bar(x=MONTHS, y=norms["precip"], name="Осадки, мм", marker_color=COLD, opacity=0.55,
-                             yaxis="y2", hovertemplate="%{x}: %{y:.0f} мм<extra></extra>"))
+                             yaxis="y2", customdata=years["precip"] if years is not None else None,
+                             hovertemplate="%{x}: %{y:.0f} мм" + (" (%{customdata} лет)" if years is not None else "") + "<extra></extra>"))
     if {"t_max", "t_min"} <= set(norms.columns):
         fig.add_trace(go.Scatter(x=MONTHS, y=norms["t_max"], line=dict(width=0), showlegend=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=MONTHS, y=norms["t_min"], fill="tonexty", line=dict(width=0),
                                  fillcolor="rgba(214,96,77,0.15)", name="Tmin…Tmax"))
     if "t_air" in norms:
         fig.add_trace(go.Scatter(x=MONTHS, y=norms["t_air"], mode="lines+markers", name="Температура, °C",
-                                 line=dict(color=WARM, width=2.5), hovertemplate="%{x}: %{y:.1f} °C<extra></extra>"))
+                                 customdata=years["t_air"] if years is not None else None, line=dict(color=WARM, width=2.5),
+                                 hovertemplate="%{x}: %{y:.1f} °C" + (" (%{customdata} лет)" if years is not None else "") + "<extra></extra>"))
     fig.add_hline(y=0, line_color="#999", line_width=1)
     fig.update_layout(yaxis2=dict(overlaying="y", side="right", showgrid=False, title="мм", rangemode="tozero"))
     return _layout(fig, title, "°C", height=340)

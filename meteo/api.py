@@ -10,6 +10,7 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import quote
 
 import pandas as pd
@@ -23,9 +24,9 @@ from . import analytics as A
 from . import forecast as FC
 from . import tables as T
 from . import views as V
-from .loader import LoadReport, combine, load
+from .loader import LoadReport, combine, load, station_from_filename
 from .report import build_sheets, html_report, to_excel
-from .schema import VARIABLES
+from .schema import STATION_PREFIXES, VARIABLES
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
@@ -36,6 +37,8 @@ PLOTLY_JS = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
 CASE_ID = "clgz"
 CASE_NAME = "Центрально-Лесной заповедник, урочище «Красное»"
 CASE_DIR = DATA / "clgz"
+UPLOADS = CASE_DIR / "uploads"
+ALLOWED = {".csv", ".txt", ".xlsx"}
 
 
 @dataclass
@@ -72,8 +75,8 @@ class Dataset:
                 issues = A.quality_issues(data)
                 # в расчёт идут значения после официальных флагов (применены при загрузке);
                 # наши дополнительные проверки (выбросы, «залипание») — только подсказки, данные не меняют
-                src = data
-                self.cache[key] = (data, A.to_daily(src), issues, A.is_subdaily(data))
+                subdaily = st in STATION_PREFIXES.values() or A.is_subdaily(data)
+                self.cache[key] = (data, A.to_daily(data, st), issues, subdaily)
         return self.cache[key]
 
     def dailies(self, clean: bool = True) -> dict[str, pd.DataFrame]:
@@ -93,11 +96,14 @@ class Dataset:
 
 
 STORE: dict[str, Dataset] = {}
+UPDATE_LOCK = threading.Lock()
 
 
 def _load_demos() -> None:
     """Загружает данные кейса при старте (имя функции сохранено для совместимости)."""
-    files = sorted(CASE_DIR.glob("*/*.csv"))
+    files = sorted(p for p in CASE_DIR.glob("*/*.csv") if p.parent != UPLOADS)
+    files.extend(sorted(p for p in UPLOADS.iterdir() if p.is_file() and p.suffix.lower() in ALLOWED)
+                 if UPLOADS.is_dir() else [])
     if files and CASE_ID not in STORE:
         ds = Dataset(CASE_ID, CASE_NAME, {f"{p.parent.name}/{p.name}": p.read_bytes() for p in files})
         ds.build()
@@ -184,35 +190,63 @@ async def upload(files: list[UploadFile] = File(...)):
     return {"id": ds.id, "name": ds.name}
 
 
-UPLOADS = DATA / "clgz" / "uploads"
-ALLOWED = {".csv", ".txt", ".xlsx", ".xls"}
+def _save_uploads(content: dict[str, bytes]) -> None:
+    UPLOADS.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=UPLOADS) as tmp:
+        staged = Path(tmp)
+        backups = staged / "previous"
+        backups.mkdir()
+        for name, data in content.items():
+            (staged / name).write_bytes(data)
+            current = UPLOADS / name
+            if current.is_file():
+                (backups / name).write_bytes(current.read_bytes())
+        replaced = []
+        try:
+            for name in content:
+                (staged / name).replace(UPLOADS / name)
+                replaced.append(name)
+        except OSError:
+            for name in reversed(replaced):
+                backup = backups / name
+                if backup.is_file():
+                    backup.replace(UPLOADS / name)
+                else:
+                    (UPLOADS / name).unlink()
+            raise
 
 
 @app.post("/api/datasets/{ds}/files")
-async def add_files(ds: str, files: list[UploadFile] = File(...)):
+def add_files(ds: str, files: list[UploadFile] = File(...)):
     """Новый файл с метеостанции в том же формате дописывается к данным без доработки кода:
     kr1_2026.csv → в ряд «Кр1 (поляна)», ame60_2022.csv → «АМЕ-60», файл другой станции — новая станция.
     Файлы набора заповедника сохраняются на диск и подхватываются при следующем запуске."""
-    d = get(ds)
-    added, old_files = [], dict(d.files)
+    content = {}
     for f in files:
         name = Path(f.filename or "file.csv").name
         if Path(name).suffix.lower() not in ALLOWED:
-            raise HTTPException(400, f"{name}: поддерживаются CSV, TXT и Excel.")
-        d.files[f"uploads/{name}"] = await f.read()
-        added.append(name)
-    try:
-        d.build()
-    except Exception as e:  # noqa: BLE001
-        d.files = old_files
-        d.build()
-        raise HTTPException(400, f"Не удалось прочитать файл: {e}")
-    if ds == CASE_ID:
-        UPLOADS.mkdir(parents=True, exist_ok=True)
-        for name in added:
-            (UPLOADS / name).write_bytes(d.files[f"uploads/{name}"])
-    from .loader import station_from_filename
-    return {"added": added, "stations": sorted({station_from_filename(n) for n in added})}
+            raise HTTPException(400, f"{name}: поддерживаются CSV, TXT и XLSX.")
+        if name in content:
+            raise HTTPException(400, f"{name}: имя файла повторяется в загрузке.")
+        content[name] = f.file.read()
+    uploads = {f"uploads/{name}": data for name, data in content.items()}
+    with UPDATE_LOCK:
+        d = get(ds)
+        updated = Dataset(d.id, d.name, d.files | uploads, dict(d.overrides))
+        try:
+            updated.build()
+            for name in uploads:
+                if not updated.reports[name].rows_out:
+                    raise ValueError(f"{Path(name).name}: нет корректных дат наблюдений.")
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"Не удалось прочитать файл: {e}") from e
+        if ds == CASE_ID:
+            try:
+                _save_uploads(content)
+            except OSError as e:
+                raise HTTPException(500, "Не удалось сохранить файлы на диск.") from e
+        STORE[ds] = updated
+    return {"added": list(content), "stations": sorted({station_from_filename(n) for n in content})}
 
 
 class Mapping(BaseModel):
@@ -224,17 +258,17 @@ class Mapping(BaseModel):
 
 @app.post("/api/datasets/{ds}/mapping")
 def set_mapping(ds: str, m: Mapping):
-    d = get(ds)
-    if m.file not in d.files:
-        raise HTTPException(404, "Файл не найден в наборе.")
-    old = dict(d.overrides)
-    d.overrides[m.file] = {"mapping": m.mapping, "time": m.time, "station": m.station}
-    try:
-        d.build()
-    except Exception as e:  # noqa: BLE001
-        d.overrides = old
-        d.build()
-        raise HTTPException(400, f"С таким сопоставлением файл не читается: {e}")
+    with UPDATE_LOCK:
+        d = get(ds)
+        if m.file not in d.files:
+            raise HTTPException(404, "Файл не найден в наборе.")
+        overrides = d.overrides | {m.file: {"mapping": m.mapping, "time": m.time, "station": m.station}}
+        updated = Dataset(d.id, d.name, d.files, overrides)
+        try:
+            updated.build()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"С таким сопоставлением файл не читается: {e}") from e
+        STORE[ds] = updated
     return {"ok": True}
 
 
@@ -257,6 +291,9 @@ def overview(var: str = "t_air", ds: str = Common["ds"], station: str | None = C
     # параметр, которого у станции нет (например, давление у АМЕ-60), — подставляем первый с данными
     if var not in daily or daily[var].notna().sum() == 0:
         have = [v for v in daily.columns if daily[v].notna().any()]
+        have = [v for v in have if v in VARIABLES]
+        if not have:
+            raise HTTPException(400, "Нет ни одного параметра с полными сутками.")
         var = "t_air" if "t_air" in have else have[0]
     return {"base": b, "years": V.years_chart(daily, var, s, e, b), "heatmap": V.anomaly_heatmap(daily, var, s, e, b),
             "ranking": V.ranking(daily, var, s, e, b), "facts": V.facts(daily, var, s, e, b, issues)}
@@ -326,7 +363,7 @@ def pair(var: str = "t_air", a: str | None = None, b: str | None = None, ds: str
 
 
 @app.get("/api/forecast")
-def forecast(ds: str = Common["ds"], station: str | None = Common["station"]):
+def forecast(ds: str = Common["ds"], station: str | None = Common["station"], base: str = Common["base"]):
     """Прогноз на 7 дней (Open-Meteo) + для контекста средняя температура тех же дат по станции."""
     try:
         f = FC.get_forecast(7)
@@ -338,11 +375,11 @@ def forecast(ds: str = Common["ds"], station: str | None = Common["station"]):
     _, daily, _, _ = d.station(st, True)
     ctx_rows = []
     if "t_air" in daily:
-        s = daily["t_air"].dropna()
-        for day in f["daily"]["time"]:
-            t = pd.Timestamp(day)
-            same = s[(s.index.month == t.month) & (s.index.day == t.day)]
-            ctx_rows.append({"date": day, "mean": float(same.mean()) if len(same) else None, "years": int(len(same))})
+        dates = pd.DatetimeIndex(f["daily"]["time"])
+        b = base_of(daily, base)
+        reference = A.doy_climatology(daily, "t_air", b).reindex(A.calendar_day(dates))
+        ctx_rows = [{"date": date, "mean": mean, "years": years}
+                    for date, mean, years in zip(f["daily"]["time"], reference["norm"], reference["years"])]
     return V.js({**f, "context": {"station": st, "days": ctx_rows}})
 
 
@@ -370,7 +407,8 @@ def table(mode: str = "daily", ds: str = Common["ds"], station: str | None = Com
     """mode=daily — суточная таблица за месяц (по start); иначе — декадная таблица за период."""
     d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
     if mode == "daily":
-        return V.js(T.daily_table(data, daily, pd.Timestamp(start) if start else s))
+        st = station if station in d.raw["station"].unique() else min(d.raw["station"])
+        return V.js(T.daily_table(data, daily, pd.Timestamp(start) if start else s, st))
     return V.js(T.decade_table(daily, s, e))
 
 
@@ -379,8 +417,9 @@ def table_xlsx(mode: str = "daily", ds: str = Common["ds"], station: str | None 
                start: str | None = Common["start"], end: str | None = Common["end"], base: str = Common["base"],
                clean: bool = Common["clean"], fill: bool = Common["fill"]):
     d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
-    st = station or sorted(d.raw["station"].unique())[0]
-    tab = T.daily_table(data, daily, pd.Timestamp(start) if start else s) if mode == "daily" else T.decade_table(daily, s, e)
+    st = station if station in d.raw["station"].unique() else min(d.raw["station"])
+    tab = (T.daily_table(data, daily, pd.Timestamp(start) if start else s, st)
+           if mode == "daily" else T.decade_table(daily, s, e))
     name = f"{st} {tab['title']}".replace("—", "-").replace(".", "-")
     return _download(T.to_excel(tab, st), f"Таблица {name}.xlsx",
                      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

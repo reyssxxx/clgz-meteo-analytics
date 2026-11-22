@@ -32,15 +32,17 @@ def build_sheets(daily: pd.DataFrame, start, end, base: tuple | None, issues: pd
     year_t = A.aggregate(d, "YS")
     year_t.index = year_t.index.year
     trends = A.trend_table(d)
+    means, years = A.monthly_reference(daily, base)
     items = items if items is not None else I.generate(daily, start, end, base, issues)
     return {
         "Выводы": pd.DataFrame({"Раздел": [i.kind for i in items], "Вывод": [i.text for i in items]}).set_index("Раздел"),
         "Статистика": _indexed(A.period_summary(daily, start, end), "Параметр"),
         "Характерные дни": _indexed(A.day_counts(daily, start, end), "Показатель"),
-        "Сутки": d,
+        "Сутки": d.rename(columns={"wind_gust": "Средний порыв ветра, м/с", "wind_gust_max": "Максимальный порыв ветра, м/с"}),
         "Месяцы": month_t,
         "Годы": year_t,
-        "Средние по месяцам": A.monthly_norms(daily, base),
+        "Средние по месяцам": means,
+        "Число лет в средних": years,
         "Тренды": trends.drop(columns="var").set_index("Параметр") if len(trends) else None,
         "Агроклимат": A.agro_indices(d),
         "Экстремумы": A.extreme_events(d),
@@ -130,24 +132,25 @@ def html_report(daily: pd.DataFrame, station: str, start, end, base: tuple | Non
             lis = "".join(f'<li class="lvl-{i.level}">{html.escape(i.text)}</li>' for i in group)
             blocks.append(f"<div><h3>{title}</h3><ul>{lis}</ul></div>")
 
+    base_label = f", годы для среднего {base[0]}–{base[1]}" if base else ""
     parts = [f"<h1>Метеоаналитика: {html.escape(station)}</h1>",
              f'<div class="meta">{html.escape(I.describe_period(start, end).capitalize())} · '
-             f"{start:%d.%m.%Y}–{end:%d.%m.%Y}, среднее за {base[0]}–{base[1] if base else ''}, "
+             f"{start:%d.%m.%Y}–{end:%d.%m.%Y}{base_label}, "
              f"сформировано {pd.Timestamp.now():%d.%m.%Y %H:%M}</div>",
              "<h2>Выводы</h2>", f'<div class="insights">{"".join(blocks)}</div>',
              "<h2>Статистика за период</h2>", _table(A.period_summary(daily, start, end)),
              _table(A.day_counts(daily, start, end))]
 
-    norms = A.monthly_norms(daily, base)
+    norms, years = A.monthly_reference(daily, base)
     if "t_air" in norms or "precip" in norms:
-        parts += ["<h2>Климат</h2>", fig_html(C.climate_diagram(norms, f"Годовой ход: среднее за {base[0]}–{base[1]}"))]
+        parts += ["<h2>Среднее за выбранный период</h2>", fig_html(C.climate_diagram(norms, years=years))]
 
     freq = "D" if (end - start).days < 400 else "MS"
     agg = A.aggregate(d, freq)
     parts.append("<h2>Ход параметров</h2>")
     for v in [v for v in ("t_air", "precip") if v in agg] or A._vars(agg)[:2]:
-        norm = A.daily_anomalies(daily, v, base).loc[start:end, "norm"] if freq == "D" and v != "precip" else None
-        parts.append(fig_html(C.timeseries(agg, v, norm)))
+        ref = A.daily_anomalies(daily, v, base).loc[start:end] if freq == "D" and v != "precip" else {}
+        parts.append(fig_html(C.timeseries(agg, v, ref.get("norm"), ref.get("years"))))
 
     if "t_air" in d:
         man = A.monthly_anomalies(daily, "t_air", base).loc[start:end]
@@ -161,9 +164,10 @@ def html_report(daily: pd.DataFrame, station: str, start, end, base: tuple | Non
         parts.append("<h2>Тренды</h2>")
         if "t_air" in d:
             ann = A.annual_series(d, "t_air")
-            norm_y = A.annual_series(daily.loc[base[0]:base[1]], "t_air").mean() if base else ann.mean()
-            if ann.notna().sum() >= 10:
-                parts.append(fig_html(C.warming_stripes((ann - norm_y).dropna())))
+            annual_ref = A.annual_series(daily.loc[slice(*base) if base else slice(None)], "t_air").dropna()
+            if ann.notna().sum() >= 10 and not annual_ref.empty:
+                title = f"Полосы потепления · среднее {I.base_phrase(annual_ref.index)}"
+                parts.append(fig_html(C.warming_stripes((ann - annual_ref.mean()).dropna(), title)))
             s = ann.reindex(range(ann.index.min(), ann.index.max() + 1))
             parts.append(fig_html(C.trend_chart(s, "t_air", A.trend(s), " — средняя за год")))
         parts.append(_table(trends.drop(columns="var")))

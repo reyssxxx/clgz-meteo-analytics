@@ -104,10 +104,8 @@ def meta(raw: pd.DataFrame, dailies: dict[str, pd.DataFrame]) -> dict:
     return js({"stations": out, "variables": [var_meta(v) for v in all_vars]})
 
 
-def _norm_daily(daily: pd.DataFrame, var: str, idx: pd.DatetimeIndex, base) -> pd.Series:
-    clim = A.doy_climatology(daily, var, base)
-    doy = np.minimum(idx.day_of_year, 365)
-    return pd.Series(clim["norm"].reindex(doy).to_numpy(), index=idx)
+def _daily_reference(daily: pd.DataFrame, var: str, idx: pd.DatetimeIndex, base) -> pd.DataFrame:
+    return A.doy_climatology(daily, var, base).reindex(A.calendar_day(idx)).set_axis(idx)
 
 
 def years_chart(daily: pd.DataFrame, var: str, start, end, base) -> dict:
@@ -121,37 +119,39 @@ def years_chart(daily: pd.DataFrame, var: str, start, end, base) -> dict:
         s = daily[var]
         first, last = s.first_valid_index(), s.last_valid_index()
         lines = []
+        comparable = I.same_window(daily, var, start, end).index
         for k in range(first.year - end.year, last.year - start.year + 1):
-            a, b = start + pd.DateOffset(years=k), end + pd.DateOffset(years=k)
-            w = s.loc[a:b]
-            if w.count() < 0.8 * len(idx) or k == 0:
+            shifted = idx + pd.DateOffset(years=k)
+            year = shifted[-1].year
+            if year not in comparable or k == 0:
                 continue
-            vals = w.to_numpy()[:len(idx)]
+            vals = s.reindex(shifted).where(shifted.day == idx.day).to_numpy()
             if is_sum:
                 vals = np.nancumsum(vals)
-            lines.append({"year": int(b.year), "y": vals})
+            lines.append({"year": int(year), "y": vals})
         cur = s.reindex(idx)
         cur_vals = cur.cumsum() if is_sum else cur
-        norm = _norm_daily(daily, var, idx, base)
+        ref = _daily_reference(daily, var, idx, base)
+        norm = ref["norm"]
         if is_sum:
             norm = norm.cumsum()
         mark = None
-        if cur.notna().any() and not is_sum:
-            an = (cur - _norm_daily(daily, var, idx, base))
+        an = A.difference(cur, ref["norm"], var).dropna()
+        if not an.empty and not is_sum:
             t = an.abs().idxmax()
             mark = {"x": t, "y": cur[t], "text": f"{I.date_ru(t)}: {I.num(cur[t])} {meta_v.unit}"}
         elif is_sum and cur.notna().any():
             t = cur_vals.last_valid_index()
             mark = {"x": t, "y": cur_vals[t], "text": f"итого {I.num(cur_vals[t], 0)} {meta_v.unit}"}
         return js({"mode": "years", "x": idx, "lines": lines, "current": {"year": int(end.year), "y": cur_vals},
-                   "norm": norm, "mark": mark, "cumulative": is_sum, "var": var_meta(var)})
+                   "norm": norm, "base_years": ref["years"], "mark": mark, "cumulative": is_sum, "var": var_meta(var)})
     m = A.aggregate(daily.loc[start:end], "MS")
-    norms = A.monthly_norms(daily, base)
-    norm = [norms.loc[t.month, var] if var in norms else None for t in m.index]
+    norms, years = A.monthly_reference(daily, base)
     band = None
     if var == "t_air" and {"t_min", "t_max"} <= set(m.columns):
         band = {"lo": m["t_min"], "hi": m["t_max"]}
-    return js({"mode": "series", "x": m.index, "y": m[var], "norm": norm, "band": band, "var": var_meta(var)})
+    return js({"mode": "series", "x": m.index, "y": m[var], "norm": norms[var].reindex(m.index.month),
+               "base_years": years[var].reindex(m.index.month), "band": band, "var": var_meta(var)})
 
 
 def anomaly_heatmap(daily: pd.DataFrame, var: str, start, end, base) -> dict:
@@ -161,10 +161,11 @@ def anomaly_heatmap(daily: pd.DataFrame, var: str, start, end, base) -> dict:
     val = (man["pct_of_norm"] - 100) if is_sum else man["anomaly"]
     t = pd.DataFrame({"y": man.index.year, "m": man.index.month, "v": val}).pivot_table(index="y", columns="m", values="v")
     t = t.reindex(columns=range(1, 13))
+    years = man.groupby(man.index.month)["years"].first().reindex(range(1, 13), fill_value=0)
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     sel = [[int(p.year), int(p.month)] for p in pd.period_range(start, end, freq="M")] if (end - start).days <= 400 else []
     lim = float(np.nanpercentile(np.abs(t.to_numpy()), 97)) if t.notna().any().any() else 1.0
-    return js({"years": t.index, "z": t.to_numpy(), "selected": sel, "limit": max(lim, 0.5),
+    return js({"years": t.index, "z": t.to_numpy(), "base_years": years, "selected": sel, "limit": max(lim, 0.5),
                "unit": "% к среднему" if is_sum else VARIABLES[var].unit, "var": var_meta(var), "inverted": is_sum or var in ("rh",)})
 
 
@@ -174,10 +175,11 @@ def ranking(daily: pd.DataFrame, var: str, start, end, base) -> dict:
     if len(vals) < 2:
         return js({"years": [], "values": [], "var": var_meta(var)})
     vb = vals.loc[int(base[0]):int(base[1])] if base else vals
-    norm = vb.mean() if len(vb) >= 3 else np.nan
-    cat = category(vals, end.year)
+    how = "circmean" if VARIABLES[var].period_agg == "circmean" else "mean"
+    norm = A._agg(vb, how) if len(vb) else np.nan
+    cat = category(vals, end.year) if VARIABLES[var].period_agg != "circmean" else None
     return js({"years": vals.index, "values": vals.to_numpy(), "selected": int(end.year), "norm": norm,
-               "base_label": I.base_phrase(vb.index) if len(vb) >= 3 else "", "category": cat, "var": var_meta(var)})
+               "base_label": I.base_phrase(vb.index), "category": cat, "var": var_meta(var)})
 
 
 def facts(daily: pd.DataFrame, var: str, start, end, base, issues=None) -> dict:
@@ -193,27 +195,31 @@ def facts(daily: pd.DataFrame, var: str, start, end, base, issues=None) -> dict:
         meta_v = VARIABLES[v]
         vals = I.same_window(daily, v, start, end) if short else pd.Series(dtype=float)
         vb = vals.loc[int(base[0]):int(base[1])] if base and len(vals) else vals
-        norm = vb.mean() if len(vb) >= 3 else np.nan
+        how = meta_v.period_agg
+        norm = A._agg(vb, "circmean" if how == "circmean" else "mean") if len(vb) >= 3 else np.nan
         nb = I.base_phrase(vb.index) if len(vb) >= 3 else ""
-        cur = (d[v].sum() if meta_v.period_agg == "sum" else d[v].mean())
-        cat = category(vals, end.year) if len(vals) else None
+        cur = vals.get(end.year, A._agg(d[v].dropna(), how))
+        cat = category(vals, end.year) if len(vals) and how != "circmean" else None
         cats[v] = cat
         if meta_v.period_agg == "sum":
-            if short and norm:
+            if end.year in vals and np.isfinite(norm) and norm != 0:
                 out.append({"value": f"{I.num(100 * cur / norm, 0)} %", "tone": "wet" if cur > 1.2 * norm else "dry" if cur < .8 * norm else "",
                             "text": f"от среднего {nb}, {I.num(cur, 0)} {meta_v.unit}"})
             else:
                 ann = A.annual_series(d, v).dropna()
                 if len(ann):
-                    out.append({"value": f"{I.num(ann.mean(), 0)} {meta_v.unit}", "tone": "", "text": f"{meta_v.label.lower()} в среднем за год"})
+                    out.append({"value": f"{I.num(ann.mean(), 0)} {meta_v.unit}", "tone": "",
+                                "text": f"{meta_v.label.lower()} в среднем за год, база {I.base_phrase(ann.index)}"})
         else:
-            if short and not np.isnan(norm):
-                dev = cur - norm
+            if end.year in vals and np.isfinite(norm):
+                dev = A.difference(cur, norm, v)
                 rank = f", {cat['rank']}-е место из {cat['n']} по величине" if cat else ""
                 out.append({"value": f"{I.num(dev, 1, sign=True)} {meta_v.unit}", "tone": "warm" if dev > 0.3 else "cold" if dev < -0.3 else "",
                             "text": f"{meta_v.label.lower()} к среднему {nb} ({I.num(cur)} {meta_v.unit}){rank}"})
             else:
-                out.append({"value": f"{I.num(cur)} {meta_v.unit}", "tone": "", "text": f"{meta_v.label.lower()}, среднее за период"})
+                qualifier = "по полным суткам" if end.year not in vals else "за период"
+                out.append({"value": f"{I.num(cur)} {meta_v.unit}", "tone": "",
+                            "text": f"{meta_v.label.lower()}, среднее {qualifier}"})
     ev = A.extreme_events(d)
     for kind, tone, word in (("Волна жары", "warm", "волна жары"), ("Волна холода", "cold", "волна холода"),
                              ("Засушливый период", "dry", "без дождей")):
@@ -233,9 +239,11 @@ def facts(daily: pd.DataFrame, var: str, start, end, base, issues=None) -> dict:
         a = A.agro_indices(daily)
         yrs = [y for y in a.index if start <= pd.Timestamp(y, 7, 15) <= end] if len(a) else []
         if yrs and "Σ активных T > 10 °C" in a:
-            g = a.loc[yrs[0], "Σ активных T > 10 °C"]
-            out.append({"value": f"{I.num(g, 0)} °C", "tone": "",
-                        "text": f"сумма активных температур, {I.num(g - a['Σ активных T > 10 °C'].mean(), 0, sign=True)} к средней"})
+            ref = a["Σ активных T > 10 °C"].dropna()
+            g = ref.get(yrs[0])
+            if g is not None:
+                out.append({"value": f"{I.num(g, 0)} °C", "tone": "",
+                            "text": f"сумма активных температур, {I.num(g - ref.mean(), 0, sign=True)} к среднему {I.base_phrase(ref.index)}"})
     items = I.generate(daily, start, end, base, issues)
     return js({"title": I.describe_period(start, end), "facts": out[:6], "categories": cats,
                "insights": [{"kind": i.kind, "level": i.level, "text": i.text} for i in items],
@@ -247,11 +255,12 @@ def series(daily: pd.DataFrame, var: str, freq: str, start, end, base) -> dict:
     out = {"x": agg.index, "y": agg[var] if var in agg else [], "var": var_meta(var), "freq": freq}
     if var == "t_air" and {"t_min", "t_max"} <= set(agg.columns):
         out["band"] = {"lo": agg["t_min"], "hi": agg["t_max"]}
-    if freq == "D":
-        out["norm"] = _norm_daily(daily, var, agg.index, base)
-    elif freq == "MS":
-        norms = A.monthly_norms(daily, base)
-        out["norm"] = [norms.loc[t.month, var] if var in norms else None for t in agg.index]
+    if var in agg and freq == "D":
+        ref = _daily_reference(daily, var, agg.index, base)
+        out.update(norm=ref["norm"], base_years=ref["years"])
+    elif var in agg and freq == "MS":
+        norms, years = A.monthly_reference(daily, base)
+        out.update(norm=norms[var].reindex(agg.index.month), base_years=years[var].reindex(agg.index.month))
     return js(out)
 
 
@@ -278,12 +287,13 @@ def trends(daily: pd.DataFrame, var: str, start, end, base, month: int | None = 
     if var in agg and len(agg):
         s = agg[var].set_axis(agg.index.year + ((agg.index.month == 12) & bool(season)))
         s = s.reindex(range(int(s.index.min()), int(s.index.max()) + 1))
-    tr = A.trend(s) if len(s) else {}
+    tr = A.trend(s) if len(s) and VARIABLES[var].period_agg != "circmean" else {}
     stripes = None
     if "t_air" in d:
         ann = A.annual_series(d, "t_air")
-        nb = A.annual_series(daily.loc[base[0]:base[1]], "t_air").mean() if base else ann.mean()
-        stripes = {"years": ann.index, "anomaly": ann - nb}
+        ref = A.annual_series(daily.loc[slice(*base) if base else slice(None)], "t_air").dropna()
+        if not ref.empty:
+            stripes = {"years": ann.index, "anomaly": ann - ref.mean(), "base_label": I.base_phrase(ref.index)}
     return js({"table": [_plain_trend(r) for r in tt.to_dict(orient="records")],
                "series": {"years": s.index, "values": s.to_numpy(), "var": var_meta(var) if var in VARIABLES else None,
                           "ols_slope": tr.get("ols_slope"), "intercept": tr.get("intercept"),
@@ -294,7 +304,8 @@ def trends(daily: pd.DataFrame, var: str, start, end, base, month: int | None = 
 
 def compare(daily: pd.DataFrame, var: str, a: tuple, b: tuple) -> dict:
     t, unit = A.compare_periods(daily, a, b)
-    ca, cb = A.annual_cycle(daily, *a), A.annual_cycle(daily, *b)
+    ca, ya = A.monthly_reference(daily.loc[slice(*a)])
+    cb, yb = A.monthly_reference(daily.loc[slice(*b)])
     rows = []
     for r in t.to_dict(orient="records"):
         rows.append({"var": r["var"], "label": r["Параметр"], "a": r["Период A"], "b": r["Период B"],
@@ -303,7 +314,9 @@ def compare(daily: pd.DataFrame, var: str, a: tuple, b: tuple) -> dict:
     return js({"rows": rows, "unit": unit,
                "a_label": I.describe_period(pd.Timestamp(a[0]), pd.Timestamp(a[1])),
                "b_label": I.describe_period(pd.Timestamp(b[0]), pd.Timestamp(b[1])),
-               "cycle": {"a": ca[var] if var in ca else [], "b": cb[var] if var in cb else []}, "var": var_meta(var)})
+               "cycle": {"a": ca[var] if var in ca else [None] * 12, "b": cb[var] if var in cb else [None] * 12,
+                         "years_a": ya[var] if var in ya else [0] * 12, "years_b": yb[var] if var in yb else [0] * 12},
+               "var": var_meta(var)})
 
 
 def stations_view(dailies: dict, station: str, var: str, freq: str, start, end, ref: str | None,
@@ -343,8 +356,15 @@ def agro(daily: pd.DataFrame, start, end) -> dict:
 
 
 def wind(df_raw: pd.DataFrame, daily: pd.DataFrame, subdaily: bool, start, end) -> dict:
-    src = df_raw.loc[start:pd.Timestamp(end) + pd.Timedelta("1D")] if subdaily else daily.loc[start:end]
-    rose, calm = A.wind_rose(src)
+    speed = next((v for v in ("wind_speed", "wind_gust") if v in daily), None)
+    required = ["wind_dir"] + ([speed] if speed else [])
+    if not set(required) <= set(daily.columns):
+        return {"available": False}
+    src = daily.loc[start:end].dropna(subset=required)
+    if subdaily:
+        raw = df_raw.loc[start:pd.Timestamp(end) + pd.Timedelta("1D") - pd.Timedelta("1ns")]
+        src = raw[raw.index.normalize().isin(src.index)]
+    rose, calm = A.wind_rose(src, speed)
     if rose.empty:
         return {"available": False}
     return js({"available": True, "sectors": list(rose.index), "classes": list(rose.columns),

@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 
 from . import analytics as A
-from . import coverage as CV
 from .schema import VARIABLES
 
 MONTHS_NOM = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь",
@@ -87,31 +86,32 @@ def same_window(daily: pd.DataFrame, var: str, start, end, min_coverage: float =
     Индекс — год окончания окна. Окно длиннее года не сдвигается (вернётся одно значение)."""
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     how = VARIABLES[var].period_agg
-    how = "mean" if how == "circmean" else how
     s = daily[var]
     if (end - start).days > 366:
         w = s.loc[start:end]
-        return pd.Series({end.year: getattr(w, how)()})
+        return pd.Series({end.year: A._agg(w, how)})
     first, last = s.first_valid_index(), s.last_valid_index()
     if first is None:
         return pd.Series(dtype=float)
-    length = (end - start).days + 1
     # окно из целых месяцев (месяц, сезон, год): год входит, только если каждый его месяц валиден
     # по правилу задания (≤ 10 неполных дней, нет 5 подряд); иное окно — если есть ≥ 80 % дней
     whole_months = start.day == 1 and end == end + pd.offsets.MonthEnd(0)
+    monthly = A.aggregate(s.to_frame(var), "MS")[var] if whole_months else None
+    dates = pd.date_range(start, end, freq="D")
     out = {}
     for k in range(first.year - end.year - 1, last.year - start.year + 2):
         a, b = start + pd.DateOffset(years=k), end + pd.DateOffset(years=k)
         if whole_months:
             b = b + pd.offsets.MonthEnd(0)   # 29 февраля и т. п.
-            w = s.reindex(pd.date_range(a, b, freq="D"))
-            ok = CV.monthly_valid_from_daily(w)
-            if len(ok) and ok.all():
-                out[b.year] = getattr(w, how)()
+            w = monthly.reindex(pd.date_range(a, b, freq="MS"))
+            if len(w) and w.notna().all():
+                out[b.year] = A._agg(w, how)
         else:
-            w = s.loc[a:b]
-            if w.count() >= min_coverage * length:
-                out[b.year] = getattr(w, how)()
+            shifted = dates + pd.DateOffset(years=k)
+            matching = shifted[shifted.day == dates.day]
+            w = s.reindex(matching)
+            if len(w) and w.count() >= min_coverage * len(w):
+                out[b.year] = A._agg(w, how)
     return pd.Series(out, dtype=float).sort_index()
 
 
@@ -146,7 +146,8 @@ def _norm_window(daily, var, start, end, base):
     else:
         vb = vals
     if len(vb) >= 3:
-        return vals, vb.mean(), base_phrase(vb.index)
+        how = "circmean" if VARIABLES[var].period_agg == "circmean" else "mean"
+        return vals, A._agg(vb, how), base_phrase(vb.index)
     return vals, np.nan, ""
 
 
@@ -155,7 +156,7 @@ def base_phrase(years) -> str:
     ys = sorted(int(y) for y in years)
     if not ys:
         return ""
-    return f"за {plural(len(ys), YEARS)} ({ys[0]}–{ys[-1]})" if len(ys) > 1 else f"за {ys[0]} год"
+    return f"за {plural(len(ys), YEARS)} ({ys[0]}–{ys[-1]})" if len(ys) > 1 else f"за 1 год ({ys[0]})"
 
 
 def _temperature(daily, start, end, base, label) -> list[Insight]:
@@ -164,10 +165,12 @@ def _temperature(daily, start, end, base, label) -> list[Insight]:
     if "t_air" not in d or d["t_air"].count() == 0:
         return out
     vals, norm, nb = _norm_window(daily, "t_air", start, end, base)
-    mean = d["t_air"].mean()
-    text = f"Средняя температура за {label} — {num(mean)} °C"
+    year = pd.Timestamp(end).year
+    mean = vals.get(year, d["t_air"].mean())
+    qualifier = " по полным суткам" if year not in vals else ""
+    text = f"Средняя температура за {label}{qualifier} — {num(mean)} °C"
     level = "normal"
-    if not np.isnan(norm):
+    if year in vals and not np.isnan(norm):
         dev = mean - norm
         if abs(dev) < 0.3:
             text += f", практически как в среднем {nb} ({num(norm)} °C)"
@@ -186,10 +189,10 @@ def _temperature(daily, start, end, base, label) -> list[Insight]:
             parts = []
             if m.loc[hi, "anomaly"] >= 1:
                 parts.append(f"самый аномально тёплый месяц — {MONTHS_NOM[hi.month - 1]} {hi.year} "
-                             f"({num(m.loc[hi, 'anomaly'], sign=True)} °C к среднему)")
+                             f"({num(m.loc[hi, 'anomaly'], sign=True)} °C к среднему за {plural(m.loc[hi, 'years'], YEARS)})")
             if m.loc[lo, "anomaly"] <= -1:
                 parts.append(f"самый аномально холодный — {MONTHS_NOM[lo.month - 1]} {lo.year} "
-                             f"({num(m.loc[lo, 'anomaly'], sign=True)} °C)")
+                             f"({num(m.loc[lo, 'anomaly'], sign=True)} °C к среднему за {plural(m.loc[lo, 'years'], YEARS)})")
             if parts:
                 out.append(Insight("main", "normal", (parts[0][0].upper() + "; ".join(parts)[1:]) + "."))
     return out
@@ -203,7 +206,7 @@ def _precip(daily, start, end, base, label) -> list[Insight]:
     if n_years > 2:
         annual = A.annual_series(d, "precip").dropna()
         return [Insight("main", "normal",
-                        f"Среднегодовая сумма осадков — {num(annual.mean(), 0)} мм "
+                        f"Среднегодовая сумма осадков — {num(annual.mean(), 0)} мм {base_phrase(annual.index)} "
                         f"(от {num(annual.min(), 0)} мм в {annual.idxmin()} до {num(annual.max(), 0)} мм "
                         f"в {annual.idxmax()}); максимум за сутки — {num(d['precip'].max())} мм "
                         f"({date_ru(d['precip'].idxmax())}).")] if len(annual) else []
@@ -211,7 +214,7 @@ def _precip(daily, start, end, base, label) -> list[Insight]:
     total = d["precip"].sum()
     text = f"Выпало {num(total, 0)} мм осадков"
     level = "normal"
-    if not np.isnan(norm) and norm > 0:
+    if pd.Timestamp(end).year in vals and not np.isnan(norm) and norm > 0:
         pct = 100 * total / norm
         text += f" — {num(pct, 0)}% от среднего {nb}"
         if pct >= 120:
@@ -306,9 +309,9 @@ def _agro(daily, start, end) -> list[Insight]:
     if a.empty or len(years) != 1 or "Σ активных T > 10 °C" not in a:
         return []
     y, r = years[0], a.loc[years[0]]
-    gdd, mean_gdd = r["Σ активных T > 10 °C"], a["Σ активных T > 10 °C"].mean()
+    gdd, reference = r["Σ активных T > 10 °C"], a["Σ активных T > 10 °C"].dropna()
     text = (f"Сумма активных температур в {y} году — {num(gdd, 0)} °C "
-            f"({num(gdd - mean_gdd, 0, sign=True)} к среднему многолетнему)")
+            f"({num(gdd - reference.mean(), 0, sign=True)} к среднему {base_phrase(reference.index)})")
     if "ГТК Селянинова" in r and not np.isnan(r["ГТК Селянинова"]):
         g = r["ГТК Селянинова"]
         zone = "засушливо" if g < 1 else "достаточное увлажнение" if g <= 1.5 else "избыточное увлажнение"
@@ -328,11 +331,11 @@ def _quality(daily, issues, start, end) -> list[Insight]:
         out.append(Insight("quality", "warn", "Неполные данные (< 90% дней): " + ", ".join(weak)
                            + ". Суммы и экстремумы по ним могут быть занижены."))
     if issues is not None and len(issues):
-        i = issues[(issues["Время"] >= pd.Timestamp(start)) & (issues["Время"] <= pd.Timestamp(end) + pd.Timedelta("1D"))]
+        i = issues[(issues["Время"] >= pd.Timestamp(start)) & (issues["Время"] < pd.Timestamp(end) + pd.Timedelta("1D"))]
         bad = i["Проблема"].str.startswith(("Вне", "Выброс")).sum()
         if bad:
-            out.append(Insight("quality", "warn", f"Исключено ошибочных значений: {bad} "
-                                                  "(вне физического диапазона или одиночные выбросы)."))
+            out.append(Insight("quality", "warn", f"Дополнительная проверка отметила {bad} подозрительных значений, "
+                                                  "которые стоит сверить с журналом станции."))
     return out
 
 

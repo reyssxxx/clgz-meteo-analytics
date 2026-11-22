@@ -60,7 +60,7 @@ def run(inputs: list[str], out_dir: str = "reports", start: str | None = None, e
     for st in stations(raw):
         data = A.for_station(raw, st)
         issues = A.quality_issues(data)      # только подсказки; в расчёт идут данные после флагов качества
-        prepared[st] = (A.to_daily(data), issues)
+        prepared[st] = (A.to_daily(data, st), issues)
     dailies = {k: v[0] for k, v in prepared.items()}
 
     written, summary = [], ["# Сводка по станциям", ""]

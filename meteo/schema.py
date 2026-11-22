@@ -46,7 +46,7 @@ VARIABLES: dict[str, Variable] = {v.name: v for v in [
     Variable("wind_speed", "Скорость ветра", "м/с", "mean", "mean", (0, 75), None,
              (r"(скор|speed).*(ветр|wind)(?!.*(max|макс|порыв|gust))",
               r"(ветр|wind).*(скор|speed)(?!.*(max|макс|порыв|gust))", r"^ff$", r"^ws")),
-    Variable("wind_gust", "Порывы ветра", "м/с", "max", "max", (0, 100), None,
+    Variable("wind_gust", "Порывы ветра", "м/с", "mean", "mean", (0, 100), None,
              (r"порыв", r"gust", r"(ветр|wind).*(макс|max)", r"^fx")),
     Variable("wind_dir", "Направление ветра", "°", "circmean", "circmean", (0, 360), None,
              (r"направ", r"direction", r"^dd$", r"^wd", r"wind_?dir")),

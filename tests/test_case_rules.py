@@ -3,11 +3,14 @@
 Главный тест — полное совпадение с эталоном coverage_by_month.csv от организаторов
 (число полных дней и валидность каждого месяца по всем станциям и годам).
 """
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+from fastapi import HTTPException, UploadFile
+from openpyxl import load_workbook
 
 from meteo import analytics as A
 from meteo import coverage as CV
@@ -118,3 +121,99 @@ def test_polyana_vs_pole_2025_and_pressure_alert(raw):
     assert p["months"]["a"][3] is None                            # апрель 2024 у давления Кр1 не учитывается
     t = V.pair(ra, da, rb, db, "Кр1", "Кр2", "t_air", "2025-01-01", "2025-12-31")
     assert t["suspicious"] == []
+
+
+def test_gust_uses_every_unflagged_observation_and_exports_mean(tmp_path):
+    from meteo import tables as T
+
+    f = tmp_path / "kr1_2026.csv"
+    rows = ["datetime,wind_gust,qc_flag"]
+    rows += [f"2026-01-01 {h:02d}:07,2," for h in range(18)]
+    rows += ["2026-01-01 00:37,21,", "2026-01-01 00:53,100,wind_gust:range"]
+    # 20 сроков, но только 17 разных часов.
+    rows += [f"2026-01-02 {h:02d}:07,2," for h in range(17)]
+    rows += [f"2026-01-02 00:{m},30," for m in (17, 27, 37)]
+    f.write_text("\n".join(rows))
+    raw, _ = load(f)
+    station = "Кр1 (поляна)"
+    daily = A.to_daily(raw, station)
+    assert pd.Timestamp("2026-01-01 00:37") in raw.index
+    assert daily.loc["2026-01-01", "wind_gust"] == 3.0
+    assert daily.loc["2026-01-01", "wind_gust_max"] == 21.0
+    assert pd.isna(daily.loc["2026-01-02", "wind_gust"])
+    tab = T.daily_table(raw, daily, "2026-01-01", station)
+    assert tab["summary"][0]["values"]["wind_gust"] == 3.0
+    assert tab["extremes"]["wind_gust"]["value"] == 21.0
+    assert load_workbook(BytesIO(T.to_excel(tab, station))).active["B6"].value == 3.0
+
+
+def test_partial_decades_do_not_include_days_outside_selection():
+    from meteo import tables as T
+
+    idx = pd.date_range("2025-01-01", "2025-01-31")
+    daily = pd.DataFrame({"wind_gust": idx.day}, index=idx)
+    tab = T.decade_table(daily, "2025-01-19", "2025-01-22")
+    second, third, month = tab["blocks"][0]["rows"]
+    assert (second["decade"], third["decade"]) == (2, 3)
+    assert second["values"]["wind_gust"] == 19.5
+    assert third["values"]["wind_gust"] == 21.5
+    assert month["partial"] and month["values"]["wind_gust"] == 20.5
+
+
+def test_reference_counts_calendar_dates_and_valid_months():
+    from meteo import views as V
+
+    idx = pd.date_range("2023-01-01", "2025-12-31")
+    daily = pd.DataFrame({"t_air": idx.year - 2020.0}, index=idx)
+    daily.loc["2024-03-01":"2024-03-05", "t_air"] = np.nan
+    ref = A.daily_anomalies(daily, "t_air", ("2023", "2024"))
+    assert ref.loc["2024-02-29", "years"] == 1
+    assert ref.loc["2025-03-01", "norm"] == 3.0
+    assert ref.loc["2025-03-01", "years"] == 1
+    norm, years = A.monthly_reference(daily, ("2023", "2024"))
+    assert years.loc[2, "t_air"] == 2 and years.loc[3, "t_air"] == 1
+    assert norm.loc[3, "t_air"] == 3.0
+    chart = V.years_chart(daily, "t_air", "2024-02-28", "2024-03-01", ("2023", "2024"))
+    assert chart["base_years"] == [2, 1, 1]
+    assert next(line for line in chart["lines"] if line["year"] == 2023)["y"] == [3.0, None, 3.0]
+
+
+def test_diurnal_balances_days_and_wind_rose_excludes_incomplete_days():
+    from meteo import views as V
+
+    idx = pd.to_datetime(["2025-01-01 08:00", "2025-01-01 08:30", "2025-01-02 08:00", "2025-01-03 00:00"])
+    raw = pd.DataFrame({"t_air": [0, 0, 12, 99], "wind_speed": [2, 2, 2, 9], "wind_dir": [0, 0, 0, 180]}, index=idx)
+    days = idx.normalize().unique()
+    daily = pd.DataFrame({"t_air": [0, 12, np.nan], "wind_speed": [2, 2, np.nan], "wind_dir": [0, 0, np.nan]}, index=days)
+    assert A.diurnal(raw, daily, "t_air", days[0], days[1]).loc[8, "value"] == 6
+    rose = V.wind(raw, daily, True, days[0], days[1])
+    assert sum(values[8] for values in rose["values"].values()) == 0
+
+
+def test_case_upload_is_validated_as_batch_and_reloaded(tmp_path, monkeypatch):
+    from meteo import api
+
+    source = tmp_path / "sokol_m1"
+    source.mkdir()
+    sample = ("datetime,t_air\n" + "".join(f"2025-01-01 {h:02d}:00,2\n" for h in range(18))).encode()
+    (source / "kr1_2025.csv").write_bytes(sample)
+    monkeypatch.setattr(api, "CASE_DIR", tmp_path)
+    monkeypatch.setattr(api, "UPLOADS", tmp_path / "uploads")
+    monkeypatch.setattr(api, "STORE", {})
+    api._load_demos()
+
+    def file(name, data=sample):
+        return UploadFile(BytesIO(data), filename=name)
+
+    incoming = sample.replace(b"2025", b"2026")
+    with pytest.raises(HTTPException) as exc:
+        api.add_files(api.CASE_ID, [file("kr1_2026.CSV", incoming), file("broken.zip")])
+    assert exc.value.status_code == 400
+    assert not api.UPLOADS.exists()
+    assert len(api.STORE[api.CASE_ID].files) == 1
+    added = api.add_files(api.CASE_ID, [file("kr1_2026.CSV", incoming)])
+    assert added["stations"] == ["Кр1 (поляна)"]
+    api.STORE.clear()
+    api._load_demos()
+    _, daily, _, _ = api.STORE[api.CASE_ID].station("Кр1 (поляна)")
+    assert daily.loc["2026-01-01", "t_air"] == 2.0

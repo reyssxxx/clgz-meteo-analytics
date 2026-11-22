@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import time
 
+import pandas as pd
 import requests
 
 # район урочища «Красное», Центрально-Лесной заповедник (Тверская обл.)
@@ -27,6 +28,10 @@ def get_forecast(days: int = 7) -> dict:
     }, timeout=15)
     r.raise_for_status()
     j = r.json()
+    hourly = j["hourly"]
+    predicted = pd.Series(hourly["temperature_2m"], index=pd.DatetimeIndex(hourly["time"]), dtype=float)
+    daily_means = predicted.resample("D").mean().reindex(pd.DatetimeIndex(j["daily"]["time"]))
+    j["daily"]["temperature_mean"] = daily_means.tolist()
     data = {"lat": LAT, "lon": LON, "source": "Open-Meteo (open-meteo.com)", "fetched": int(now),
             "hourly": j["hourly"], "daily": j["daily"]}
     _cache.update(t=now, days=days, data=data)
