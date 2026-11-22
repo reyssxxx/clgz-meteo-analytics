@@ -1068,6 +1068,58 @@ async function inspectRecovery(panel, button) {
   }
 }
 
+function bindStationSources(main) {
+  const form = $('#station-data-request', main);
+  const status = $('#station-request-status', main);
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const { start, end } = form.elements;
+    end.setCustomValidity(start.value > end.value ? 'Дата окончания должна быть не раньше даты начала.' : '');
+    if (form.reportValidity()) status.textContent = 'Демо: форма заполнена. В рабочей версии запрос получит заповедник.';
+  });
+  form.addEventListener('input', () => {
+    form.elements.end.setCustomValidity('');
+    status.textContent = '';
+  });
+  const catalog = $('#public-station-catalog', main);
+  const list = $('#public-station-list', catalog);
+  catalog.addEventListener('toggle', async () => {
+    if (!catalog.open || list.dataset.loaded) return;
+    list.dataset.loaded = '1';
+    list.textContent = 'Загружаю каталог…';
+    try {
+      const stations = await api('/api/public-stations', {}, false);
+      list.innerHTML = stations.map(s => `<div class="station-source-row"><span>${esc(s.name)}</span>
+        <button type="button" class="btn" data-public-station="${esc(s.id)}">Добавить</button></div>`).join('');
+      for (const button of $$('[data-public-station]', list)) {
+        button.addEventListener('click', async () => {
+          const station = stations.find(s => s.id === button.dataset.publicStation);
+          const origin = routeSeq;
+          button.disabled = true;
+          try {
+            const file = await fetch('/api/public-stations/' + encodeURIComponent(station.id) + '/data');
+            if (!file.ok) throw new Error('Не удалось прочитать данные станции.');
+            const body = new FormData();
+            body.append('files', await file.blob(), station.name + '.csv');
+            const response = await fetch('/api/datasets', { method: 'POST', body });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Не удалось добавить станцию.');
+            toast('Добавлена станция: ' + station.name);
+            if (origin === routeSeq) await switchDataset(data.id);
+          } catch (error) {
+            toast(error.message, true);
+          } finally {
+            button.disabled = false;
+          }
+        });
+      }
+    } catch (error) {
+      delete list.dataset.loaded;
+      if (error !== STALE) list.textContent = error.message;
+    }
+  });
+}
+
 async function renderData(main) {
   const [sets, q] = await Promise.all([fetch('/api/datasets').then(r => r.json()), api('/api/quality', {}, false)]);
   const roles = [['', '— не использовать —'], ['__time', 'Дата и время'], ['__station', 'Станция'], ...META.all_variables.map(v => [v.id, `${v.label}, ${v.unit}`])];
@@ -1079,6 +1131,29 @@ async function renderData(main) {
         <div class="dslist">${sets.map(s => `<button data-ds="${s.id}" class="${s.id === S.ds ? 'on' : ''}">${esc(s.name)}</button>`).join('')}</div>
         <label class="drop" id="drop"><input type="file" id="file" multiple accept=".csv,.txt,.xlsx" hidden>
           <b>Добавить файлы с метеостанции</b><br>В том же формате, например kr1_2026.csv или ame60_2022.csv — данные допишутся в ряд станции.<br>Перетащите сюда или нажмите.</label>
+        <div class="station-sources">
+          <details class="station-source">
+            <summary>Запросить метеоданные с другой станции</summary>
+            <form id="station-data-request" class="station-request-form">
+              <label>Заповедник или организация<input name="recipient" required maxlength="150"></label>
+              <label>Метеостанция<input name="station" required maxlength="150"></label>
+              <label>Показатели<input name="parameters" required placeholder="Например, температура и влажность"></label>
+              <div class="station-request-dates">
+                <label>С даты<input name="start" type="date" required></label>
+                <label>По дату<input name="end" type="date" required></label>
+              </div>
+              <label>Почта для ответа<input name="email" type="email" required></label>
+              <label>Комментарий<textarea name="comment" rows="2"></textarea></label>
+              <button class="btn" type="submit">Отправить</button>
+              <p id="station-request-status" role="status"></p>
+            </form>
+          </details>
+          <details class="station-source" id="public-station-catalog">
+            <summary>Добавить из доступных метеостанций</summary>
+            <p>Открытые суточные данные NOAA GHCN Daily за 2024–2025 гг.</p>
+            <div id="public-station-list" aria-live="polite"></div>
+          </details>
+        </div>
       </div>
       <div class="box panel"><div class="head"><b>Отчёты</b></div>
         <p class="note" style="padding-top:2px">${esc(S.station)}, ${esc(periodLabel())}. Станция и период — в строке управления вверху.</p>
@@ -1127,6 +1202,7 @@ async function renderData(main) {
         </tbody></table></div></div>` : ''}
     </div>
   </div>`;
+  bindStationSources(main);
   const recoveryPanel = $('#recovery-panel', main);
   const recoveryButton = $('#recovery-preview', recoveryPanel);
   recoveryButton.addEventListener('click', () => inspectRecovery(recoveryPanel, recoveryButton));

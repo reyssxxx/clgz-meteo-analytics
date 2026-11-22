@@ -46,6 +46,10 @@ CASE_DIR = DATA / "clgz"
 UPLOADS = CASE_DIR / "uploads"
 RECOVERY_STORE = DATA / ".recovery" / "values.sqlite3"
 ALLOWED = {".csv", ".txt", ".xlsx"}
+PUBLIC_STATIONS = {
+    "USW00094728": "Нью-Йорк — Центральный парк",
+    "USW00014739": "Бостон — аэропорт Логан",
+}
 
 
 @dataclass
@@ -177,6 +181,18 @@ Common = dict(
 
 
 # ------------------------------------------------------------------ наборы данных
+
+@app.get("/api/public-stations")
+def public_stations():
+    return [{"id": code, "name": name} for code, name in PUBLIC_STATIONS.items()]
+
+
+@app.get("/api/public-stations/{code}/data")
+def public_station_data(code: str):
+    if code not in PUBLIC_STATIONS:
+        raise HTTPException(404, "Станция отсутствует в каталоге.")
+    return FileResponse(DATA / "public_stations" / f"{code}.csv", media_type="text/csv",
+                        filename=f"{PUBLIC_STATIONS[code]}.csv")
 
 @app.get("/api/datasets")
 def datasets():
