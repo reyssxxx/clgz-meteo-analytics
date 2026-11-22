@@ -23,7 +23,7 @@ yc container registry configure-docker >/dev/null
 
 step "Сборка и публикация образа (linux/amd64)"
 IMAGE="cr.yandex/$REG_ID/$NAME:$(date +%Y%m%d-%H%M%S)"
-docker build --platform linux/amd64 -t "$IMAGE" .
+docker build --platform linux/amd64 --provenance=false --sbom=false -t "$IMAGE" .
 docker push "$IMAGE"
 
 step "Сервисный аккаунт для скачивания образа"
@@ -45,7 +45,7 @@ if exists compute instance get --name "$VM"; then
 else
   yc compute instance create-with-container --name "$VM" --zone "$ZONE" \
     --platform standard-v3 --cores 2 --core-fraction 50 --memory 4GB \
-    --create-boot-disk size=30 \
+    --create-boot-disk size=20 \
     --network-interface "subnet-name=$SUBNET,nat-ip-version=ipv4" \
     --service-account-name "$SA" \
     --container-name "$NAME" --container-image "$IMAGE" \
