@@ -9,6 +9,7 @@ import pandas as pd
 from scipy import stats
 
 from . import coverage as CV
+from .quality import quality_issues
 from .schema import STATION_PREFIXES, VARIABLES
 
 FREQS = {"D": "Сутки", "W": "Неделя", "MS": "Месяц", "QS-DEC": "Сезон", "YS": "Год"}
@@ -210,49 +211,6 @@ def day_counts(daily: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
 
 
 # =============================================================== качество данных
-
-def quality_issues(df: pd.DataFrame, stuck_hours: int = 6) -> pd.DataFrame:
-    """Подозрительные значения: вне физического диапазона, резкие скачки, «залипание»
-    датчика, Tmin > Tmax. Возвращает таблицу (время, параметр, значение, проблема)."""
-    df = df.drop(columns="station", errors="ignore")
-    issues = []
-    sub = is_subdaily(df)
-    for v in _vars(df):
-        meta, s = VARIABLES[v], df[v]
-        lo, hi = meta.limits
-        bad = s[(s < lo) | (s > hi)]
-        issues += [(t, v, x, f"Вне диапазона [{lo}; {hi}]") for t, x in bad.items()]
-        if sub and meta.max_step_per_hour:
-            ss = s.dropna()
-            ts = ss.index.to_series()
-            h_prev = ts.diff().dt.total_seconds() / 3600
-            h_next = -ts.diff(-1).dt.total_seconds() / 3600
-            d_prev, d_next = ss - ss.shift(1), ss - ss.shift(-1)
-            big_prev = (h_prev <= 3) & (d_prev.abs() > meta.max_step_per_hour * h_prev)
-            big_next = (h_next <= 3) & (d_next.abs() > meta.max_step_per_hour * h_next)
-            # выброс: точка резко отличается от обоих соседей в одну сторону — ошибка измерения
-            spike = big_prev & big_next & (np.sign(d_prev) == np.sign(d_next))
-            # скачок: резкий сдвиг уровня, который сохраняется (может быть реальным, например фронт)
-            shift = big_prev & ~spike & ~spike.shift(1, fill_value=False)
-            issues += [(t, v, ss[t], f"Выброс {d_prev[t]:+.1f} / {-d_next[t]:+.1f}") for t in ss[spike].index]
-            issues += [(t, v, ss[t], f"Скачок {d_prev[t]:+.1f} за {h_prev[t]:.0f} ч") for t in ss[shift].index]
-        if sub and v in ("t_air", "rh", "pressure", "wind_speed"):
-            ss = s.dropna()
-            run_id = (ss != ss.shift()).cumsum()
-            run_len = ss.groupby(run_id).transform("size")
-            step_h = infer_step(df).total_seconds() / 3600
-            natural = (ss == 0) if v != "t_air" else pd.Series(False, index=ss.index)
-            if v == "rh":
-                natural |= ss >= 95  # насыщение при тумане/осадках держится часами — это норма
-            stuck = ss[(run_len * step_h >= stuck_hours) & ~natural]
-            first = stuck.groupby(run_id[stuck.index]).head(1)
-            issues += [(t, v, x, f"Одинаковое значение ≥ {stuck_hours} ч") for t, x in first.items()]
-    if {"t_min", "t_max"} <= set(df.columns):
-        m = df["t_min"] > df["t_max"]
-        issues += [(t, "t_min", df.at[t, "t_min"], "Tmin > Tmax") for t in df.index[m]]
-    out = pd.DataFrame(issues, columns=["Время", "Параметр", "Значение", "Проблема"])
-    return out.sort_values("Время").reset_index(drop=True)
-
 
 def mask_issues(df: pd.DataFrame, issues: pd.DataFrame, kinds: tuple[str, ...] = ("Вне диапазона", "Выброс")) -> pd.DataFrame:
     """Заменяет на NaN значения с проблемами указанных типов."""

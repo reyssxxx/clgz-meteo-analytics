@@ -16,6 +16,7 @@ import pandas as pd
 
 from . import analytics as A
 from . import coverage as CV
+from . import quality as Q
 from .schema import VARIABLES
 
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь",
@@ -153,9 +154,19 @@ def decade_table(daily: pd.DataFrame, start, end) -> dict:
                       "valid_months": n_valid, "months": len(months)}}
 
 
+def monthly_rows(tab: dict, start) -> pd.DataFrame:
+    """Месячные значения ровно в том виде, в каком они показаны в таблице."""
+    if tab["mode"] == "daily":
+        start_month = pd.Timestamp(start).to_period("M").to_timestamp()
+        rows = {start_month: tab["summary"][-1]["values"]}
+    else:
+        rows = {pd.Timestamp(block["month"]): block["rows"][-1]["values"] for block in tab["blocks"]}
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
 # ------------------------------------------------------------------ Excel в том же виде
 
-def to_excel(tab: dict, station: str) -> bytes:
+def to_excel(tab: dict, station: str, review=None) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
@@ -235,6 +246,8 @@ def to_excel(tab: dict, station: str) -> bytes:
         ws.column_dimensions[get_column_letter(i)].width = 13
     ws.row_dimensions[5].height = 30
     ws.freeze_panes = "B6"
+    if review:
+        Q.write_review_sheets(wb, review)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

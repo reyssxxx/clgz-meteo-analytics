@@ -11,12 +11,12 @@ const SEASONS = ['Зима', 'Весна', 'Лето', 'Осень'];
 // Что показывает строка управления на каждом экране
 const CTL = {
   overview: ['var', 'station', 'period', 'settings'],
-  tables: ['station', 'period'],
+  tables: ['var', 'station', 'period'],
   trends: ['var', 'station', 'scope', 'settings'],
   compare: ['var', 'station', 'cmp', 'settings'],
   stations: ['var', 'period'],
   agro: ['station', 'period', 'settings'],
-  data: ['station', 'period', 'settings'],
+  data: ['var', 'station', 'period', 'settings'],
   forecast: ['station'],
 };
 const PERIOD_PAGES = new Set(Object.keys(CTL).filter(p => CTL[p].includes('period')));
@@ -131,7 +131,7 @@ async function api(path, params = {}, withPeriod = true) {
 }
 function apiUrl(path, extra = {}) {
   const base = S.base;
-  return `${path}?${new URLSearchParams({ ds: S.ds, station: S.station, base, clean: S.clean, fill: S.fill, ...periodParams(), ...extra })}`;
+  return `${path}?${new URLSearchParams({ ds: S.ds, station: S.station, var: S.var, base, clean: S.clean, fill: S.fill, ...periodParams(), ...extra })}`;
 }
 
 // ------------------------------------------------------------------ Plotly
@@ -475,7 +475,7 @@ function factsHtml(f, label) {
 /* То, что сейчас сводят вручную в Excel: суточная таблица за месяц или декадная за период */
 async function renderTables(main) {
   const mode = S.kind === 'month' ? 'daily' : 'decades';
-  const t = await api('/api/table', { mode });
+  const [t, review] = await Promise.all([api('/api/table', { mode }), api('/api/quality/selection', { var: S.var, mode })]);
   const cols = t.columns;
   const cell = (c, v) => {
     if (v === null || v === undefined) return '<td class="num na">—</td>';
@@ -531,7 +531,7 @@ async function renderTables(main) {
       <span class="hint2">${mode === 'daily' ? 'суточная таблица' : 'декадная таблица'}</span><span class="sp"></span>
       <a class="btn" href="${apiUrl('/api/table.xlsx', { mode })}">${ICON.dl}Скачать Excel</a></div>
     <p class="note" style="padding-top:2px">${esc(sub)}${mode === 'daily' ? '' : ' Для суточной таблицы выберите «Месяц».'}</p>
-    <div class="tablewrap dtwrap"><table class="t dt">${head}<tbody>${body}</tbody></table></div></div>`;
+    <div class="tablewrap dtwrap"><table class="t dt">${head}<tbody>${body}</tbody></table></div></div>${reviewHtml(review)}`;
 }
 const RUMB = ['С', 'ССВ', 'СВ', 'ВСВ', 'В', 'ВЮВ', 'ЮВ', 'ЮЮВ', 'Ю', 'ЮЮЗ', 'ЮЗ', 'ЗЮЗ', 'З', 'ЗСЗ', 'СЗ', 'ССЗ'];
 
@@ -689,7 +689,7 @@ async function renderStations(main) {
     ${mx.map((x, k) => { const d = parseISO(x); const a = r.months.a[k], b = r.months.b[k], df = r.months.diff[k];
       return `<tr><td>${cap(MONTHS[d.getMonth()])} ${d.getFullYear()}</td><td class="num">${a === null ? '<span class="na">н/п</span>' : fmt(a)}</td><td class="num">${b === null ? '<span class="na">н/п</span>' : fmt(b)}</td>
       <td class="num">${df === null ? '—' : `<b class="${df > 0 ? 'warm' : df < 0 ? 'cold' : ''}">${fmt(df, 2, true)}</b>`}</td></tr>`; }).join('')}
-    </tbody></table></div><p class="note">«н/п» — месяц неполный на этой станции. Разница — только для месяцев, валидных на обеих.</p></div>`;
+    </tbody></table></div><p class="note">«н/п» — месяц неполный на этой станции. Разница — только для месяцев, валидных на обеих. Высота датчиков в исходном наборе не указана.</p></div>`;
   if (r.suspicious.length) {
     const items = r.suspicious.map(x => { const d = parseISO(x.month); return `${MONTHS[d.getMonth()]} ${d.getFullYear()} (${fmt(x.diff, 1, true)} ${esc(u)} при обычных ${fmt(x.typical, 1, true)})`; });
     main.insertAdjacentHTML('afterbegin', `<div class="box alert"><b>Возможен сбой датчика.</b> Разница между станциями резко выбивается из обычной: ${items.join('; ')}.
@@ -861,6 +861,43 @@ async function renderForecast(main) {
 }
 
 // ------------------------------------------------------------------ ДАННЫЕ И ОТЧЁТЫ
+function observationTime(value) {
+  return esc(String(value).replace('T', ' ').slice(0, 16));
+}
+
+function reviewHtml(review) {
+  const dateRange = row => observationTime(row['Время']) +
+    (row['Конец'] === row['Время'] ? '' : ` — ${observationTime(row['Конец'])}`);
+  const source = review.var.id === review.source.id ? '' : ` · по данным «${esc(review.source.label)}»`;
+  return `<div class="box panel mt">
+    <div class="head"><b>Проверка месячных расчётов</b><span>${esc(review.var.label)}, ${esc(review.var.unit)}${source}</span></div>
+    <p class="note">Использованные измерения образуют суточные значения, из которых рассчитывается месячное. Контекстные предупреждения остаются в данных для проверки специалистом.</p>
+    <div class="tablewrap"><table class="t"><thead><tr><th>Месяц</th><th class="num">Значение</th><th class="num">Полных дней</th>
+      <th class="num">Использовано</th><th class="num">Исключено</th><th>Причины исключений</th></tr></thead><tbody>
+      ${review.audit.map(m => {
+        const causes = [];
+        if (m['Неполные сутки']) causes.push(`неполные сутки × ${m['Неполные сутки']}`);
+        if (m['Неполный месяц']) causes.push(`неполный месяц × ${m['Неполный месяц']}`);
+        if (m['Причины при импорте']) causes.push(m['Причины при импорте']);
+        return `<tr><td>${esc(m['Месяц'])}</td><td class="num">${fmt(m['Значение'])}</td>
+          <td class="num">${m['Полных дней']} из ${m['Число дней в выборе']}</td><td class="num">${m['Использовано']}</td>
+          <td class="num">${m['Исключено']}</td><td>${esc(causes.join(', ') || '—')}</td></tr>`;
+      }).join('')}</tbody></table></div>
+    <details class="note"><summary>Важные аномалии · ${review.important_total}</summary>
+      ${review.important.length ? `<ul>${review.important.map(i => `<li>${dateRange(i)} · ${esc(i['Статус'])} · ${esc(i['Проблема'])} ·
+        ${fmt(i['Значение'])} ${esc(review.source.unit)}. ${esc(i['Контекст'])}</li>`).join('')}</ul>`
+        : '<p>За выбранный период важных предупреждений нет.</p>'}
+      ${review.important_total > review.important.length ? '<p>Все эпизоды доступны в Excel.</p>' : ''}
+    </details>
+    <details class="note"><summary>Исключения при импорте · ${review.excluded_at_import}</summary>
+      ${review.exclusions.length ? `<ul>${review.exclusions.map(i => `<li>${observationTime(i['Время'])} ·
+        ${fmt(i['Значение'])} ${esc(review.source.unit)} · ${esc(i['Причина'])} · ${esc(i['Файл'])}</li>`).join('')}</ul>`
+        : '<p>За выбранный период исключений при импорте нет.</p>'}
+      ${review.excluded_at_import > review.exclusions.length ? '<p>Полный список доступен в Excel.</p>' : ''}
+    </details>
+  </div>`;
+}
+
 async function renderData(main) {
   const [sets, q] = await Promise.all([fetch('/api/datasets').then(r => r.json()), api('/api/quality', {}, false)]);
   const roles = [['', '— не использовать —'], ['__time', 'Дата и время'], ['__station', 'Станция'], ...META.all_variables.map(v => [v.id, `${v.label}, ${v.unit}`])];
@@ -901,12 +938,13 @@ async function renderData(main) {
     <div class="stack">
       <div class="box panel"><div class="head"><b>Проверка качества</b><span>${q.issues_total} ${plural(q.issues_total, ['замечание', 'замечания', 'замечаний'])}</span></div>
         ${kinds.length ? `<div class="tablewrap"><table class="t"><tbody>${kinds.map(([k, n]) => `<tr><td>${esc({ 'Вне': 'Вне физического диапазона', 'Выброс': 'Одиночные выбросы', 'Скачок': 'Резкие скачки уровня', 'Одинаковое': 'Залипание датчика', 'Tmin': 'Tmin больше Tmax' }[k] || k)}</td><td class="num">${n}</td>
-          <td><span class="verdict ${['Вне', 'Выброс'].includes(k) ? 'warn' : ''}">${['Вне', 'Выброс'].includes(k) ? 'исключены флагами' : 'предупреждение'}</span></td></tr>`).join('')}</tbody></table></div>`
+          <td><span class="verdict ${['Вне', 'Выброс'].includes(k) ? 'warn' : ''}">предупреждение</span></td></tr>`).join('')}</tbody></table></div>`
           : '<div class="note">Подозрительных значений не найдено.</div>'}
         <p class="note">Пропусков в ряду: ${q.gaps_total}.</p></div>
       ${q.issues.length ? `<div class="box panel"><div class="head"><b>Подозрительные значения</b><span>первые ${q.issues.length}</span></div>
-        <div class="tablewrap" style="max-height:300px;overflow:auto"><table class="t"><thead><tr><th>Время</th><th>Параметр</th><th class="num">Значение</th><th>Проблема</th></tr></thead><tbody>
-        ${q.issues.map(i => `<tr><td>${esc(String(i['Время']).replace('T', ' ').slice(0, 16))}</td><td>${esc(i['Параметр'])}</td><td class="num">${fmt(i['Значение'])}</td><td>${esc(i['Проблема'])}</td></tr>`).join('')}
+        <div class="tablewrap" style="max-height:300px;overflow:auto"><table class="t"><thead><tr><th>Время</th><th>Параметр</th><th class="num">Значение</th><th>Проблема</th><th>Приоритет</th><th>Контекст</th></tr></thead><tbody>
+        ${q.issues.map(i => `<tr><td>${observationTime(i['Время'])}</td><td>${esc(i['Параметр'])}</td><td class="num">${fmt(i['Значение'])}</td>
+          <td>${esc(i['Проблема'])}</td><td>${esc(i['Приоритет'])}</td><td>${esc(i['Контекст'])}</td></tr>`).join('')}
         </tbody></table></div></div>` : ''}
     </div>
   </div>`;

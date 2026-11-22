@@ -12,6 +12,7 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 
 from . import analytics as A
+from . import quality as Q
 from . import charts as C
 from . import insights as I
 from .schema import VARIABLES, label
@@ -46,11 +47,11 @@ def build_sheets(daily: pd.DataFrame, start, end, base: tuple | None, issues: pd
         "Тренды": trends.drop(columns="var").set_index("Параметр") if len(trends) else None,
         "Агроклимат": A.agro_indices(d),
         "Экстремумы": A.extreme_events(d),
-        "Качество данных": issues,
+        "Качество данных": Q.period_records(issues, start, end) if issues is not None else None,
     }
 
 
-def to_excel(sheets: dict[str, pd.DataFrame | None]) -> bytes:
+def to_excel(sheets: dict[str, pd.DataFrame | None], review=None) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         for name, df in sheets.items():
@@ -67,6 +68,11 @@ def to_excel(sheets: dict[str, pd.DataFrame | None]) -> bytes:
             for i, col in enumerate([out.index.name or ""] + list(out.columns), start=1):
                 width = 90 if name == "Выводы" and i == 2 else min(max(12, len(str(col)) + 2), 40)
                 ws.column_dimensions[get_column_letter(i)].width = width
+        if review:
+            Q.write_review_sheets(w.book, review)
+            for position, name in enumerate(review, 1):
+                ws = w.book[name]
+                w.book.move_sheet(ws, offset=position - w.book.index(ws))
     return buf.getvalue()
 
 
@@ -110,7 +116,7 @@ def _table(df: pd.DataFrame, index: bool = False) -> str:
 
 
 def html_report(daily: pd.DataFrame, station: str, start, end, base: tuple | None,
-                issues: pd.DataFrame | None = None, items: list[I.Insight] | None = None) -> str:
+                issues: pd.DataFrame | None = None, items: list[I.Insight] | None = None, review=None) -> str:
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     d = daily.loc[start:end]
     items = items if items is not None else I.generate(daily, start, end, base, issues)
@@ -184,8 +190,13 @@ def html_report(daily: pd.DataFrame, station: str, start, end, base: tuple | Non
 
     comp = A.completeness(d)
     parts += ["<h2>Качество данных</h2>", fig_html(C.completeness_heatmap(comp))]
-    if issues is not None and len(issues):
-        cnt = issues["Проблема"].str.split().str[0].value_counts().rename_axis("Тип").reset_index(name="Число")
+    if review:
+        if Q.AUDIT_SHEET in review:
+            parts += ["<h3>Проверка месячных расчётов по выбранному параметру</h3>", _table(review[Q.AUDIT_SHEET])]
+        parts += ["<h3>Важные аномалии</h3>", _table(review[Q.IMPORTANT_SHEET].head(20))]
+    diagnostics = Q.period_records(issues, start, end) if issues is not None else None
+    if diagnostics is not None and len(diagnostics):
+        cnt = diagnostics["Проблема"].str.split().str[0].value_counts().rename_axis("Тип").reset_index(name="Число")
         parts.append(_table(cnt))
 
     parts.append("<footer>Отчёт сформирован автоматически. Методика: агрегация по правилам для каждого "

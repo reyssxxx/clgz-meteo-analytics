@@ -17,6 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import analytics as A
+from . import quality as Q
 from . import insights as I
 from .loader import combine, load, stations
 from .report import build_sheets, html_report, to_excel
@@ -41,7 +42,7 @@ def run(inputs: list[str], out_dir: str = "reports", start: str | None = None, e
     files = _files(inputs)
     if not files:
         raise SystemExit("Не найдено файлов CSV/TXT/XLSX.")
-    frames = []
+    frames, reports = [], []
     for f in files:
         try:
             df, rep = load(f)
@@ -49,6 +50,7 @@ def run(inputs: list[str], out_dir: str = "reports", start: str | None = None, e
             log(f"· {f.name}: пропущен — {e}")
             continue
         frames.append(df)
+        reports.append(rep)
         log(f"· {f.name}: {rep.rows_out} строк, параметры: {', '.join(sorted(set(rep.mapping.values())))}")
     if not frames:
         raise SystemExit("Ни один файл не удалось прочитать как наблюдения метеостанции.")
@@ -60,11 +62,10 @@ def run(inputs: list[str], out_dir: str = "reports", start: str | None = None, e
     for st in stations(raw):
         data = A.for_station(raw, st)
         issues = A.quality_issues(data)      # только подсказки; в расчёт идут данные после флагов качества
-        prepared[st] = (A.to_daily(data, st), issues)
-    dailies = {k: v[0] for k, v in prepared.items()}
+        prepared[st] = (data, A.to_daily(data, st), issues)
 
     written, summary = [], ["# Сводка по станциям", ""]
-    for st, (daily, issues) in prepared.items():
+    for st, (data, daily, issues) in prepared.items():
         t0 = time.time()
         s = max(pd.Timestamp(start), daily.index.min()) if start else daily.index.min()
         e = min(pd.Timestamp(end), daily.index.max()) if end else daily.index.max()
@@ -80,10 +81,14 @@ def run(inputs: list[str], out_dir: str = "reports", start: str | None = None, e
             except ValueError:
                 pass
         items = I.generate(daily, s, e, b, issues)
+        var = "t_air" if "t_air" in daily and daily["t_air"].notna().any() else next(
+            v for v in A._vars(daily) if daily[v].notna().any())
+        review = Q.export_sheets(data, daily, A.aggregate(daily.loc[s:e], "MS"), issues,
+                                 Q.exclusions_for(reports, st), st, var, s, e)
         x = out / f"{_safe(st)}.xlsx"
-        x.write_bytes(to_excel(build_sheets(daily, s, e, b, issues, items)))
+        x.write_bytes(to_excel(build_sheets(daily, s, e, b, issues, items), review))
         h = out / f"{_safe(st)}.html"
-        h.write_text(html_report(daily, st, s, e, b, issues, items), encoding="utf-8")
+        h.write_text(html_report(daily, st, s, e, b, issues, items, review), encoding="utf-8")
         written += [x, h]
         summary += [f"## {st}", "", I.to_markdown([i for i in items if i.kind in ("main", "trend")]), ""]
         log(f"✓ {st}: {x.name}, {h.name} ({time.time() - t0:.1f} с)")

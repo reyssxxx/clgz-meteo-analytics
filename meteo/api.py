@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from . import analytics as A
 from . import forecast as FC
+from . import quality as Q
 from . import tables as T
 from . import views as V
 from .loader import LoadReport, combine, load, station_from_filename
@@ -400,6 +401,35 @@ def quality(ds: str = Common["ds"], station: str | None = Common["station"], cle
     return V.quality(data, daily, issues, d.reports)
 
 
+@app.get("/api/quality/selection")
+def quality_selection(var: str = "t_air", mode: str = "", ds: str = Common["ds"], station: str | None = Common["station"],
+                      start: str | None = Common["start"], end: str | None = Common["end"],
+                      base: str = Common["base"], clean: bool = Common["clean"], fill: bool = Common["fill"]):
+    d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
+    st = station if station in d.raw["station"].unique() else min(d.raw["station"])
+    if var not in VARIABLES or var not in daily:
+        raise HTTPException(400, "Параметр недоступен для этой станции.")
+    exclusions = Q.exclusions_for(d.reports.values(), st)
+    source = Q.observation_var(data, var)
+    selected = Q.period_records(exclusions[exclusions["Параметр"] == source], s, e)
+    diagnostics = Q.period_records(issues[issues["Параметр"] == source], s, e)
+    important = Q.important_events(diagnostics, selected)
+    if mode == "daily":
+        s = (pd.Timestamp(start) if start else s).to_period("M").to_timestamp()
+        e = s + pd.offsets.MonthEnd(0)
+        monthly = T.monthly_rows(T.daily_table(data, daily, s, st), s)
+    elif mode == "decades":
+        monthly = T.monthly_rows(T.decade_table(daily, s, e), s)
+    else:
+        monthly = A.aggregate(daily[[var]].loc[s:e], "MS")
+    if var not in monthly:
+        monthly[var] = float("nan")
+    audit = Q.audit_months(data, daily, monthly, exclusions, var, s, e)
+    return V.js({"audit": audit, "important": important.head(50), "important_total": len(important),
+                 "exclusions": selected.head(20), "excluded_at_import": len(selected), "var": V.var_meta(var),
+                 "source": V.var_meta(source)})
+
+
 @app.get("/api/table")
 def table(mode: str = "daily", ds: str = Common["ds"], station: str | None = Common["station"],
           start: str | None = Common["start"], end: str | None = Common["end"], base: str = Common["base"],
@@ -413,15 +443,20 @@ def table(mode: str = "daily", ds: str = Common["ds"], station: str | None = Com
 
 
 @app.get("/api/table.xlsx")
-def table_xlsx(mode: str = "daily", ds: str = Common["ds"], station: str | None = Common["station"],
+def table_xlsx(mode: str = "daily", var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"],
                start: str | None = Common["start"], end: str | None = Common["end"], base: str = Common["base"],
                clean: bool = Common["clean"], fill: bool = Common["fill"]):
     d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
     st = station if station in d.raw["station"].unique() else min(d.raw["station"])
     tab = (T.daily_table(data, daily, pd.Timestamp(start) if start else s, st)
            if mode == "daily" else T.decade_table(daily, s, e))
+    if mode == "daily":
+        s = (pd.Timestamp(start) if start else s).to_period("M").to_timestamp()
+        e = s + pd.offsets.MonthEnd(0)
+    monthly = T.monthly_rows(tab, s)
+    review = Q.export_sheets(data, daily, monthly, issues, Q.exclusions_for(d.reports.values(), st), st, var, s, e)
     name = f"{st} {tab['title']}".replace("—", "-").replace(".", "-")
-    return _download(T.to_excel(tab, st), f"Таблица {name}.xlsx",
+    return _download(T.to_excel(tab, st, review), f"Таблица {name}.xlsx",
                      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
@@ -433,22 +468,26 @@ def _download(content: bytes | str, filename: str, media: str) -> Response:
 
 
 @app.get("/api/report.html")
-def report_html(ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
+def report_html(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
                 end: str | None = Common["end"], base: str = Common["base"], clean: bool = Common["clean"],
                 fill: bool = Common["fill"]):
     d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
-    st = station or sorted(d.raw["station"].unique())[0]
-    return _download(html_report(daily, st, s, e, b, issues), f"Метеоотчёт {st} {s:%Y%m%d}-{e:%Y%m%d}.html",
+    st = station if station in d.raw["station"].unique() else min(d.raw["station"])
+    review = Q.export_sheets(data, daily, A.aggregate(daily.loc[s:e], "MS"), issues,
+                             Q.exclusions_for(d.reports.values(), st), st, var, s, e)
+    return _download(html_report(daily, st, s, e, b, issues, review=review), f"Метеоотчёт {st} {s:%Y%m%d}-{e:%Y%m%d}.html",
                      "text/html; charset=utf-8")
 
 
 @app.get("/api/report.xlsx")
-def report_xlsx(ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
+def report_xlsx(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
                 end: str | None = Common["end"], base: str = Common["base"], clean: bool = Common["clean"],
                 fill: bool = Common["fill"]):
     d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
-    st = station or sorted(d.raw["station"].unique())[0]
-    return _download(to_excel(build_sheets(daily, s, e, b, issues)), f"Метеоданные {st} {s:%Y%m%d}-{e:%Y%m%d}.xlsx",
+    st = station if station in d.raw["station"].unique() else min(d.raw["station"])
+    review = Q.export_sheets(data, daily, A.aggregate(daily.loc[s:e], "MS"), issues,
+                             Q.exclusions_for(d.reports.values(), st), st, var, s, e)
+    return _download(to_excel(build_sheets(daily, s, e, b, issues), review), f"Метеоданные {st} {s:%Y%m%d}-{e:%Y%m%d}.xlsx",
                      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 

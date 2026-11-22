@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from . import analytics as A
+from . import quality as Q
 from .schema import VARIABLES
 
 MONTHS_NOM = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь",
@@ -331,10 +332,11 @@ def _quality(daily, issues, start, end) -> list[Insight]:
         out.append(Insight("quality", "warn", "Неполные данные (< 90% дней): " + ", ".join(weak)
                            + ". Суммы и экстремумы по ним могут быть занижены."))
     if issues is not None and len(issues):
-        i = issues[(issues["Время"] >= pd.Timestamp(start)) & (issues["Время"] < pd.Timestamp(end) + pd.Timedelta("1D"))]
-        bad = i["Проблема"].str.startswith(("Вне", "Выброс")).sum()
+        i = Q.period_records(issues, start, end)
+        high = i["Приоритет"] == Q.IMPORTANT if "Приоритет" in i else i["Проблема"].str.startswith(("Вне", "Выброс"))
+        bad = len(i[high].drop_duplicates(["Время", "Параметр"]))
         if bad:
-            out.append(Insight("quality", "warn", f"Дополнительная проверка отметила {bad} подозрительных значений, "
+            out.append(Insight("quality", "warn", f"Дополнительная проверка отметила {bad} подозрительных эпизодов, "
                                                   "которые стоит сверить с журналом станции."))
     return out
 
