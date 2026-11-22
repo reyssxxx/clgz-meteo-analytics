@@ -233,3 +233,32 @@ def test_case_upload_is_validated_as_batch_and_reloaded(tmp_path, monkeypatch):
     api._load_demos()
     _, daily, _, _ = api.STORE[api.CASE_ID].station("Кр1 (поляна)")
     assert daily.loc["2026-01-01", "t_air"] == 2.0
+
+
+def test_public_station_joins_case_and_is_available_after_reload(tmp_path, monkeypatch):
+    from meteo import api
+
+    case_dir = tmp_path / "clgz"
+    original = case_dir / "ame60"
+    original.mkdir(parents=True)
+    csv = b"datetime,t_air\n2024-01-01,2\n2024-01-02,3\n"
+    (original / "ame60_2024.csv").write_bytes(csv)
+    public = tmp_path / "public_stations"
+    public.mkdir()
+    (public / "USW00094728.csv").write_bytes(csv)
+    monkeypatch.setattr(api, "DATA", tmp_path)
+    monkeypatch.setattr(api, "CASE_DIR", case_dir)
+    monkeypatch.setattr(api, "UPLOADS", case_dir / "uploads")
+    monkeypatch.setattr(api, "STORE", {})
+    result = api.add_public_station("USW00094728")
+    assert result["dataset"] == api.CASE_ID
+    assert api.add_public_station("USW00094728") == result
+    api.STORE.clear()
+    case = api.get(api.CASE_ID)
+    assert set(case.raw.station) == {"АМЕ-60", result["station"]}
+    assert list(case.reports[f"uploads/{result['station']}.csv"].stations) == [result["station"]]
+    api.remove_public_station("USW00094728")
+    api.remove_public_station("USW00094728")
+    api.STORE.clear()
+    assert api.get(api.CASE_ID).raw.station.unique().tolist() == ["АМЕ-60"]
+    assert api.add_public_station("USW00094728") == result

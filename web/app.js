@@ -117,7 +117,13 @@ function ensurePeriod() {
     }
     return;
   }
-  if (!S.y || !fits(S.kind, S.y, S.i)) Object.assign(S, latestPeriod(S.kind));
+  if (!S.y || !fits(S.kind, S.y, S.i)) {
+    Object.assign(S, latestPeriod(S.kind));
+    if (!fits(S.kind, S.y, S.i)) {
+      const [lo, hi] = dataRange();
+      Object.assign(S, { kind: 'custom', cs: iso(lo), ce: iso(hi) });
+    }
+  }
 }
 function periodParams() { const [a, b] = bounds(); return { start: iso(a), end: iso(b) }; }
 
@@ -330,6 +336,23 @@ const empty = (title, text) => `<div class="box empty"><b>${esc(title)}</b>${esc
 
 // ------------------------------------------------------------------ ОБЗОР
 const UI = { yearsMode: 'values', freq: 'MS', trendScope: '', agroPick: '', cmp: null, ref: '', tableFilter: 'all' };
+const stationChanges = typeof BroadcastChannel === 'function' ? new BroadcastChannel('meteo-public-stations') : null;
+let metadataRefresh = 0;
+
+async function refreshCaseStations() {
+  if (S.ds !== 'clgz') return;
+  const refresh = ++metadataRefresh;
+  const params = new URLSearchParams({ ds: S.ds, clean: S.clean });
+  const response = await fetch('/api/meta?' + params, { cache: 'no-store' });
+  if (!response.ok) throw new Error('Не удалось обновить список станций.');
+  const meta = await response.json();
+  if (refresh !== metadataRefresh || S.ds !== 'clgz') return;
+  applyMeta(meta);
+  await route();
+}
+stationChanges?.addEventListener('message', () => {
+  if (META) refreshCaseStations().catch(error => toast(error.message, true));
+});
 
 async function renderOverview(main) {
   const v = varById(S.var);
@@ -355,6 +378,7 @@ async function renderOverview(main) {
       <div class="cbar">${o.heatmap.inverted ? 'суше' : 'холоднее'} <i class="${o.heatmap.inverted ? 'inv' : ''}"></i> ${o.heatmap.inverted ? 'влажнее' : 'теплее'}</div>
     </div>
   </div>
+  ${o.anomalies ? anomalyExplanationsHtml(o.anomalies, o.base) : ''}
   <div class="grid21 mt">
     <div class="box panel" id="rank-panel">
       <div class="head"><b>${esc(rankTitle())}</b><span>${esc(v.label.toLowerCase())}${o.ranking.category ? `, ${o.ranking.category.rank}-е место из ${o.ranking.category.n}` : ''}</span>
@@ -484,6 +508,34 @@ function drawRank(r) {
   });
 }
 function rankRange(vals) { const f = vals.filter(x => x !== null); const lo = Math.min(...f), hi = Math.max(...f), p = (hi - lo) * .15 || 1; return [lo - p, hi + p]; }
+
+function anomalyExplanationsHtml(a, base) {
+  const month = a.scale === 'month';
+  const comparison = month ? 'тем же месяцам' : 'тем же календарным датам';
+  const unit = esc(a.var.unit);
+  const number = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 4 });
+  const signed = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 4, signDisplay: 'exceptZero' });
+  const details = a.items.map(x => {
+    const date = parseISO(x.date);
+    const title = month ? `${cap(MONTHS[date.getMonth()])} ${date.getFullYear()}` : ruDate(x.date);
+    const qualityCount = `${x.quality_count} ${plural(x.quality_count, ['замечание', 'замечания', 'замечаний'])}`;
+    return `<li>
+      <h3>${esc(title)}</h3>
+      <p>Отклонение <strong>${signed.format(x.difference)} ${unit}</strong>. Значение ${number.format(x.value)} ${unit},
+        среднее ${number.format(x.mean)} ${unit} по архиву станции (${yearsLabel(x.years)}).</p>
+      ${x.quality_note ? `<p class="anomaly-quality"><strong>Качество данных (${qualityCount})</strong><br>
+        ${esc(x.quality_note)}. ${esc(x.quality_context)}</p>` : ''}
+    </li>`;
+  }).join('');
+  let description = `Наибольшие отклонения по величине от среднего по ${comparison} в базе ${base.join('–')}.`;
+  if (!a.has_comparison) description = `Для сравнения нужно минимум ${yearsLabel(a.min_years)} с данными за те же календарные даты.`;
+  else if (!details) description = 'У сопоставимых значений в выбранном периоде отклонений от среднего не выявлено.';
+  return `<section class="box mt anomaly-explanations" aria-labelledby="anomaly-heading">
+    <h2 id="anomaly-heading">Почему выделены аномалии</h2>
+    <p>${esc(a.var.label)}. ${esc(description)}</p>
+    ${details ? `<ul>${details}</ul>` : ''}
+  </section>`;
+}
 
 function factsHtml(f, label) {
   const tone = t => ({ warm: 'warm', cold: 'cold', dry: 'dry', wet: 'wet' }[t] || '');
@@ -953,6 +1005,7 @@ const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 async function renderForecast(main) {
   const f = await api('/api/forecast', {}, false);
   const D = f.daily, H = f.hourly, ctx = f.context;
+  const advice = f.recommendations || [];
   const cards = D.time.map((t, k) => {
     const d = parseISO(t), mean = D.temperature_mean[k], c = ctx.days[k];
     const dev = mean !== null && c && c.mean !== null ? mean - c.mean : null;
@@ -964,7 +1017,19 @@ async function renderForecast(main) {
       ${dev !== null ? `<div class="fdev ${dev > 1 ? 'warm' : dev < -1 ? 'cold' : ''}">${Math.abs(dev) < 1 ? 'близко к среднему' : `${dev > 0 ? 'теплее' : 'холоднее'} среднего на ${fmt(Math.abs(dev), 1)}°`} · ${yearsLabel(c.years)}</div>` : ''}
     </div>`;
   }).join('');
-  main.innerHTML = `<div class="fcards">${cards}</div>
+  main.innerHTML = `<section class="box forecast-advice" aria-labelledby="forecast-advice-title">
+    <header>
+      <h2 id="forecast-advice-title">Что учесть на неделе</h2>
+      <p>Район заповедника · ${esc(f.source)}</p>
+    </header>
+    ${advice.length ? `<ul>${advice.map(r => `<li>
+      <div class="forecast-advice-date"><time datetime="${esc(r.start)}">${esc(ruDate(r.start, false))}</time>${r.end !== r.start
+        ? ` – <time datetime="${esc(r.end)}">${esc(ruDate(r.end, false))}</time>` : ''}</div>
+      <div><h3>${esc(r.title)}</h3><p>${esc(r.evidence.replace(/(\d)\.(\d)/g, '$1,$2'))}</p></div>
+      <p class="forecast-advice-action">${esc(r.action)}</p>
+    </li>`).join('')}</ul>` : '<p class="forecast-advice-empty">По доступным данным предупреждений на неделю нет.</p>'}
+  </section>
+  <div class="fcards">${cards}</div>
   <div class="grid21 mt">
     <div class="box panel"><div class="tb">${dlBtn('ch-ft', 'прогноз')}</div>
       ${panelTitle('Температура воздуха по часам', 'прогноз на 7 дней и среднее за те же даты', `Пунктир — средняя суточная температура этих дат по станции «${ctx.station}» за выбранный период. В карточках указан вклад по годам для каждой даты. Прогноз получен из Open-Meteo.`)}
@@ -1235,6 +1300,68 @@ async function inspectRecovery(panel, button) {
   }
 }
 
+function bindStationSources(main) {
+  const form = $('#station-data-request', main);
+  const status = $('#station-request-status', main);
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const { start, end } = form.elements;
+    end.setCustomValidity(start.value > end.value ? 'Дата окончания должна быть не раньше даты начала.' : '');
+    if (form.reportValidity()) status.textContent = 'Демо: форма заполнена. В рабочей версии запрос получит заповедник.';
+  });
+  form.addEventListener('input', () => {
+    form.elements.end.setCustomValidity('');
+    status.textContent = '';
+  });
+  const catalog = $('#public-station-catalog', main);
+  const list = $('#public-station-list', catalog);
+  async function loadCatalog() {
+    if (!catalog.open || list.dataset.loaded) return;
+    list.dataset.loaded = '1';
+    list.textContent = 'Загружаю каталог…';
+    try {
+      const stations = await api('/api/public-stations', {}, false);
+      list.innerHTML = stations.map(s => `<div class="station-source-row"><span>${esc(s.name)}</span>
+        <button type="button" class="${s.added ? 'pill' : 'btn'}" data-public-station="${esc(s.id)}"
+          aria-label="${s.added ? 'Удалить' : 'Добавить'}: ${esc(s.name)}">${s.added ? 'Удалить' : 'Добавить'}</button></div>`).join('');
+      for (const button of $$('[data-public-station]', list)) {
+        button.addEventListener('click', async () => {
+          const station = stations.find(s => s.id === button.dataset.publicStation);
+          const origin = routeSeq;
+          const buttons = $$('[data-public-station]', list);
+          buttons.forEach(item => { item.disabled = true; });
+          button.textContent = station.added ? 'Удаляю…' : 'Добавляю…';
+          try {
+            const url = '/api/public-stations/' + encodeURIComponent(station.id);
+            const response = await fetch(station.added ? url : url + '/add',
+              { method: station.added ? 'DELETE' : 'POST' });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Не удалось изменить список станций.');
+            toast((station.added ? 'Станция удалена: ' : 'Станция добавлена: ') + station.name);
+            stationChanges?.postMessage(data.dataset);
+            if (origin === routeSeq) S.ds = data.dataset;
+            await refreshCaseStations();
+          } catch (error) {
+            toast(error.message, true);
+          } finally {
+            buttons.forEach(item => { item.disabled = false; });
+            button.textContent = station.added ? 'Удалить' : 'Добавить';
+          }
+        });
+      }
+    } catch (error) {
+      delete list.dataset.loaded;
+      if (error !== STALE) list.textContent = error.message;
+    }
+  }
+  catalog.addEventListener('toggle', () => {
+    if (!catalog.isConnected) return;
+    UI.publicCatalogOpen = catalog.open;
+    if (catalog.open) loadCatalog();
+  });
+  if (catalog.open) loadCatalog();
+}
+
 async function renderData(main) {
   const [sets, q, session] = await Promise.all([
     fetch('/api/datasets').then(r => r.json()),
@@ -1254,6 +1381,29 @@ async function renderData(main) {
           ${employee ? '<a class="pill" href="/employee/profile">Кабинет сотрудника</a>' : ''}</div>
         <label class="drop" id="drop" ${employee ? '' : 'hidden'}><input type="file" id="file" multiple accept=".csv,.txt,.xlsx" hidden>
           <b>Добавить файлы с метеостанции</b><br>В том же формате, например kr1_2026.csv или ame60_2022.csv — данные допишутся в ряд станции.<br>Перетащите сюда или нажмите.</label>
+        <div class="station-sources">
+          <details class="station-source">
+            <summary>Запросить метеоданные с другой станции</summary>
+            <form id="station-data-request" class="station-request-form">
+              <label>Заповедник или организация<input name="recipient" required maxlength="150"></label>
+              <label>Метеостанция<input name="station" required maxlength="150"></label>
+              <label>Показатели<input name="parameters" required placeholder="Например, температура и влажность"></label>
+              <div class="station-request-dates">
+                <label>С даты<input name="start" type="date" required></label>
+                <label>По дату<input name="end" type="date" required></label>
+              </div>
+              <label>Почта для ответа<input name="email" type="email" required></label>
+              <label>Комментарий<textarea name="comment" rows="2"></textarea></label>
+              <button class="btn" type="submit">Отправить</button>
+              <p id="station-request-status" role="status"></p>
+            </form>
+          </details>
+          <details class="station-source" id="public-station-catalog" ${UI.publicCatalogOpen ? 'open' : ''}>
+            <summary>Добавить из доступных метеостанций</summary>
+            <p>Открытые суточные данные NOAA GHCN Daily за 2024–2025 гг.</p>
+            <div id="public-station-list" aria-live="polite"></div>
+          </details>
+        </div>
       </div>
       <div class="box panel"><div class="head"><b>Отчёты</b></div>
         <p class="note" style="padding-top:2px">${esc(S.station)}, ${esc(periodLabel())}. Станция и период — в строке управления вверху.</p>
@@ -1292,6 +1442,7 @@ async function renderData(main) {
         </tbody></table></div></div>` : ''}
     </div>
   </div>`;
+  bindStationSources(main);
   const recoveryPanel = $('#recovery-panel', main);
   const recoveryButton = $('#recovery-preview', recoveryPanel);
   recoveryButton.addEventListener('click', () => inspectRecovery(recoveryPanel, recoveryButton));
@@ -1362,7 +1513,11 @@ async function renderDailySummary(main) {
 const PAGES = { overview: renderOverview, tables: renderTables, forecast: renderForecast, trends: renderTrends, compare: renderCompare, stations: renderStations, agro: renderAgro, data: renderData };
 
 async function loadMeta() {
-  META = await api('/api/meta', {}, false);
+  applyMeta(await api('/api/meta', {}, false));
+}
+
+function applyMeta(meta) {
+  META = meta;
   if (!META.stations.some(s => s.id === S.station))
     S.station = META.stations.slice().sort((a, b) => (a.end < b.end ? 1 : -1))[0].id;   // по умолчанию — самые свежие данные
   const st = META.stations.find(s => s.id === S.station);

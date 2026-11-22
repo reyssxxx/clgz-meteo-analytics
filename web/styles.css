@@ -194,6 +194,14 @@ main { padding: 0 20px 32px; }
 .head .sp { flex: 1; }
 
 /* ---------- факты ---------- */
+.anomaly-explanations { padding: 14px 18px 16px; }
+.anomaly-explanations h2 { margin: 0 0 4px; font-size: 17px; }
+.anomaly-explanations p { margin: 0; color: var(--ink-2); font-size: 15px; }
+.anomaly-explanations ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  gap: 12px; margin: 12px 0 0; padding: 0; list-style: none; }
+.anomaly-explanations li { border-top: 1px solid var(--line-soft); padding-top: 8px; }
+.anomaly-explanations h3 { margin: 0 0 3px; font-size: 16px; }
+.anomaly-explanations .anomaly-quality { margin-top: 6px; }
 .facts { padding: 12px 18px 14px; display: flex; flex-direction: column; }
 .facts h3 { font-size: 17px; font-weight: 700; margin: 2px 0 6px; }
 .fact { display: flex; gap: 14px; padding: 9px 0; border-top: 1px solid var(--line-soft); align-items: baseline; }
@@ -337,6 +345,26 @@ td .na, td.na { color: var(--ink-3); }
 
 /* ---------- прогноз ---------- */
 .fcards { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; }
+.forecast-advice { margin-bottom: 14px; padding: 0 18px; }
+.forecast-advice header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+  gap: 2px 16px; padding: 12px 0 9px; }
+.forecast-advice h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.forecast-advice p { margin: 0; color: var(--ink-2); font-size: 14px; }
+.forecast-advice ul { margin: 0; padding: 0; list-style: none; }
+.forecast-advice li { display: grid; grid-template-columns: 8rem minmax(0, 1fr) minmax(0, 1.2fr); gap: 4px 18px;
+  align-items: baseline; padding: 10px 0 12px; border-top: 1px solid var(--line-soft); }
+.forecast-advice-date { color: var(--ink-2); font-size: 14px; }
+.forecast-advice h3 { margin: 0 0 2px; font-size: 15px; font-weight: 650; }
+.forecast-advice .forecast-advice-action { color: var(--ink); }
+.forecast-advice .forecast-advice-empty { border-top: 1px solid var(--line-soft); padding: 10px 0 12px; }
+@media (max-width: 780px) {
+  .forecast-advice li { grid-template-columns: 7rem minmax(0, 1fr); }
+  .forecast-advice-action { grid-column: 2; }
+}
+@media (max-width: 440px) {
+  .forecast-advice li { grid-template-columns: minmax(0, 1fr); }
+  .forecast-advice-action { grid-column: auto; }
+}
 .fday { padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
 .fday .fd { font-size: 14px; color: var(--ink-2); }
 .fday .ft { display: flex; align-items: baseline; gap: 8px; }
@@ -393,3 +421,15 @@ table.dt tbody tr.mh td.first { position: sticky; left: 0; }
 [data-guest] .top nav a[aria-disabled="true"] { opacity: .63; cursor: default; }
 [data-guest] .controls :disabled { cursor: default; }
 .guest-actions { padding: 4px 16px 12px; }
+.station-sources { display: grid; gap: 8px; margin: 12px 16px 0; }
+.station-source { border: 1px solid var(--line); border-radius: var(--r); padding: 9px 12px; }
+.station-source summary { cursor: pointer; font-weight: 650; }
+.station-source p { margin: 8px 0; }
+.station-request-form { display: grid; gap: 8px; margin-top: 10px; }
+.station-request-form label { display: grid; gap: 4px; min-width: 0; }
+.station-request-form input, .station-request-form textarea { width: 100%; font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.station-request-form button { justify-self: start; }
+.station-request-form p:empty { display: none; }
+.station-request-dates { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.station-source-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; }
+.station-file-group > .stack { margin-top: 10px; }

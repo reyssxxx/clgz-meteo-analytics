@@ -47,6 +47,7 @@ class LoadReport:
     qc_flagged: dict[str, int] = field(default_factory=dict)   # параметр → число исключённых по флагу значений
     dup_conflict_rows: int = 0
     exclusions: list[tuple] = field(default_factory=list)
+    stations: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [f"Файл: {self.filename}"]
@@ -363,6 +364,7 @@ def load(source: str | Path | bytes, filename: str | None = None,
         parts.append(to_canonical(raw, m, t, sc, st, meta.get("decimal", "."), report))
     out = pd.concat(parts).sort_index()
     report.rows_out = len(out)
+    report.stations = sorted(out["station"].unique())
     return out, report
 
 

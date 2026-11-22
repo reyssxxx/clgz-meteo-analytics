@@ -47,6 +47,10 @@ CASE_DIR = DATA / "clgz"
 UPLOADS = CASE_DIR / "uploads"
 RECOVERY_STORE = DATA / ".recovery" / "values.sqlite3"
 ALLOWED = {".csv", ".txt", ".xlsx"}
+PUBLIC_STATIONS = {
+    "USW00094728": "Нью-Йорк — Центральный парк",
+    "USW00014739": "Бостон — аэропорт Логан",
+}
 
 
 @dataclass
@@ -183,6 +187,54 @@ Common = dict(
 
 # ------------------------------------------------------------------ наборы данных
 
+@meteo_router.get("/public-stations")
+def public_stations():
+    d = get(CASE_ID)
+    return [{"id": code, "name": name, "added": f"uploads/{name}.csv" in d.files}
+            for code, name in PUBLIC_STATIONS.items()]
+
+
+@meteo_router.get("/public-stations/{code}/data")
+def public_station_data(code: str):
+    if code not in PUBLIC_STATIONS:
+        raise HTTPException(404, "Станция отсутствует в каталоге.")
+    return FileResponse(DATA / "public_stations" / f"{code}.csv", media_type="text/csv",
+                        filename=f"{PUBLIC_STATIONS[code]}.csv")
+
+
+@meteo_router.post("/public-stations/{code}/add")
+def add_public_station(code: str):
+    if code not in PUBLIC_STATIONS:
+        raise HTTPException(404, "Станция отсутствует в каталоге.")
+    name = PUBLIC_STATIONS[code]
+    data = (DATA / "public_stations" / f"{code}.csv").read_bytes()
+    _add_files(CASE_ID, {f"{name}.csv": data}, skip_existing=True)
+    return {"dataset": CASE_ID, "station": name}
+
+
+@meteo_router.delete("/public-stations/{code}")
+def remove_public_station(code: str):
+    if code not in PUBLIC_STATIONS:
+        raise HTTPException(404, "Станция отсутствует в каталоге.")
+    name = PUBLIC_STATIONS[code]
+    filename = f"{name}.csv"
+    key = f"uploads/{filename}"
+    with UPDATE_LOCK:
+        d = get(CASE_ID)
+        if key in d.files:
+            path = UPLOADS / filename
+            source = DATA / "public_stations" / f"{code}.csv"
+            if d.files[key] != source.read_bytes() or (path.exists() and path.read_bytes() != d.files[key]):
+                raise HTTPException(409, "Под этим именем сохранён другой файл.")
+            files = {k: v for k, v in d.files.items() if k != key}
+            overrides = {k: v for k, v in d.overrides.items() if k != key}
+            updated = Dataset(d.id, d.name, files, overrides)
+            updated.build()
+            path.unlink(missing_ok=True)
+            STORE[CASE_ID] = updated
+    return {"dataset": CASE_ID, "station": name}
+
+
 @meteo_router.get("/datasets")
 def datasets():
     if not STORE:
@@ -241,9 +293,15 @@ def add_files(ds: str, files: list[UploadFile] = File(...)):
         if name in content:
             raise HTTPException(400, f"{name}: имя файла повторяется в загрузке.")
         content[name] = f.file.read()
+    return _add_files(ds, content)
+
+
+def _add_files(ds: str, content: dict[str, bytes], *, skip_existing: bool = False):
     uploads = {f"uploads/{name}": data for name, data in content.items()}
     with UPDATE_LOCK:
         d = get(ds)
+        if skip_existing and all(d.files.get(key) == data for key, data in uploads.items()):
+            return {"added": [], "stations": []}
         updated = Dataset(d.id, d.name, d.files | uploads, dict(d.overrides))
         try:
             updated.build()
@@ -307,8 +365,10 @@ def overview(var: str = "t_air", ds: str = Common["ds"], station: str | None = C
         if not have:
             raise HTTPException(400, "Нет ни одного параметра с полными сутками.")
         var = "t_air" if "t_air" in have else have[0]
+    parameter_issues = issues[issues["Параметр"] == Q.observation_var(data, var)]
     return {"base": b, "years": V.years_chart(daily, var, s, e, b), "heatmap": V.anomaly_heatmap(daily, var, s, e, b),
-            "ranking": V.ranking(daily, var, s, e, b), "facts": V.facts(daily, var, s, e, b, issues)}
+            "ranking": V.ranking(daily, var, s, e, b), "facts": V.facts(daily, var, s, e, b, issues),
+            "anomalies": V.anomaly_explanations(daily, var, s, e, b, parameter_issues)}
 
 
 @meteo_router.get("/series")
