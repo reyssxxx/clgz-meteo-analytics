@@ -374,7 +374,7 @@ async function renderOverview(main) {
       <div class="cbar">${o.heatmap.inverted ? 'суше' : 'холоднее'} <i class="${o.heatmap.inverted ? 'inv' : ''}"></i> ${o.heatmap.inverted ? 'влажнее' : 'теплее'}</div>
     </div>
   </div>
-  ${anomalyExplanationsHtml(o.anomalies, o.base)}
+  ${o.anomalies ? anomalyExplanationsHtml(o.anomalies, o.base) : ''}
   <div class="grid21 mt">
     <div class="box panel" id="rank-panel">
       <div class="head"><b>${esc(rankTitle())}</b><span>${esc(v.label.toLowerCase())}${o.ranking.category ? `, ${o.ranking.category.rank}-е место из ${o.ranking.category.n}` : ''}</span>
@@ -891,13 +891,17 @@ async function renderForecast(main) {
       ${dev !== null ? `<div class="fdev ${dev > 1 ? 'warm' : dev < -1 ? 'cold' : ''}">${Math.abs(dev) < 1 ? 'близко к среднему' : `${dev > 0 ? 'теплее' : 'холоднее'} среднего на ${fmt(Math.abs(dev), 1)}°`} · ${yearsLabel(c.years)}</div>` : ''}
     </div>`;
   }).join('');
-  main.innerHTML = `<section class="box panel forecast-advice" aria-labelledby="forecast-advice-title">
-    <div class="head"><b id="forecast-advice-title">Важные рекомендации</b><span>Район заповедника</span></div>
+  main.innerHTML = `<section class="box forecast-advice" aria-labelledby="forecast-advice-title">
+    <header>
+      <h2 id="forecast-advice-title">Что учесть на неделе</h2>
+      <p>Район заповедника · ${esc(f.source)}</p>
+    </header>
     ${advice.length ? `<ul>${advice.map(r => `<li>
-      <b>${esc(r.title)}</b><small>${esc(ruDate(r.start, false))}${r.end !== r.start ? ' — ' + esc(ruDate(r.end, false)) : ''}</small>
-      <p>${esc(r.evidence)}</p><p>${esc(r.action)}</p>
-    </li>`).join('')}</ul>` : '<p class="note">По доступным данным условий для предупреждений не выявлено.</p>'}
-    <p class="note">Автоматические подсказки по модели Open-Meteo за последние 14 дней и прогнозу на неделю.</p>
+      <div class="forecast-advice-date"><time datetime="${esc(r.start)}">${esc(ruDate(r.start, false))}</time>${r.end !== r.start
+        ? ` – <time datetime="${esc(r.end)}">${esc(ruDate(r.end, false))}</time>` : ''}</div>
+      <div><h3>${esc(r.title)}</h3><p>${esc(r.evidence.replace(/(\d)\.(\d)/g, '$1,$2'))}</p></div>
+      <p class="forecast-advice-action">${esc(r.action)}</p>
+    </li>`).join('')}</ul>` : '<p class="forecast-advice-empty">По доступным данным предупреждений на неделю нет.</p>'}
   </section>
   <div class="fcards">${cards}</div>
   <div class="grid21 mt">

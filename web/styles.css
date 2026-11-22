@@ -305,11 +305,26 @@ td .na, td.na { color: var(--ink-3); }
 
 /* ---------- прогноз ---------- */
 .fcards { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; }
-.forecast-advice { margin-bottom: 14px; }
-.forecast-advice ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 10px; margin: 0; padding: 6px 16px; list-style: none; }
-.forecast-advice li { padding: 10px 12px; border-left: 3px solid #D3A24C; background: #FBF4E6; border-radius: 6px; }
-.forecast-advice li small { display: block; margin-top: 2px; color: var(--ink-2); }
-.forecast-advice li p { margin: 5px 0 0; }
+.forecast-advice { margin-bottom: 14px; padding: 0 18px; }
+.forecast-advice header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+  gap: 2px 16px; padding: 12px 0 9px; }
+.forecast-advice h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.forecast-advice p { margin: 0; color: var(--ink-2); font-size: 14px; }
+.forecast-advice ul { margin: 0; padding: 0; list-style: none; }
+.forecast-advice li { display: grid; grid-template-columns: 8rem minmax(0, 1fr) minmax(0, 1.2fr); gap: 4px 18px;
+  align-items: baseline; padding: 10px 0 12px; border-top: 1px solid var(--line-soft); }
+.forecast-advice-date { color: var(--ink-2); font-size: 14px; }
+.forecast-advice h3 { margin: 0 0 2px; font-size: 15px; font-weight: 650; }
+.forecast-advice .forecast-advice-action { color: var(--ink); }
+.forecast-advice .forecast-advice-empty { border-top: 1px solid var(--line-soft); padding: 10px 0 12px; }
+@media (max-width: 780px) {
+  .forecast-advice li { grid-template-columns: 7rem minmax(0, 1fr); }
+  .forecast-advice-action { grid-column: 2; }
+}
+@media (max-width: 440px) {
+  .forecast-advice li { grid-template-columns: minmax(0, 1fr); }
+  .forecast-advice-action { grid-column: auto; }
+}
 .fday { padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
 .fday .fd { font-size: 14px; color: var(--ink-2); }
 .fday .ft { display: flex; align-items: baseline; gap: 8px; }
