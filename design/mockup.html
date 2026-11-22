@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Метеоаналитика — макет</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#EEF0F3; --panel:#FFFFFF; --line:#D5D9E0; --line-2:#C3C8D1;
+  --ink:#1E2229; --ink-2:#5B6270; --ink-3:#8A909C;
+  --accent:#941333; --accent-2:#7A0F2A; --accent-tint:#F3E3E7;
+  --warm:#C8323C; --cold:#2F6DB5; --year:#941333;
+  --shadow:0 1px 3px rgba(20,24,31,.08);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 "Source Sans 3",system-ui,sans-serif;font-feature-settings:"tnum" 1}
+header{background:var(--accent);color:#fff;height:56px;display:flex;align-items:stretch}
+header .burger{width:56px;display:grid;place-items:center;font-size:22px}
+header .brand{display:flex;align-items:center;gap:12px;font-size:20px;font-weight:600;padding-right:28px;border-right:1px solid rgba(255,255,255,.25)}
+header .brand span{font-size:14px;font-weight:400;opacity:.85}
+header nav{display:flex;align-items:stretch;margin-left:12px}
+header nav a{display:flex;align-items:center;padding:0 16px;font-size:16px;color:#fff;opacity:.85;text-decoration:none}
+header nav a.on{opacity:1;box-shadow:inset 0 -3px 0 #fff}
+header .latest{margin-left:auto;background:var(--accent-2);padding:8px 20px;display:flex;flex-direction:column;justify-content:center;font-size:13px;line-height:1.25}
+header .latest b{font-size:16px;font-weight:600}
+.controls{display:flex;justify-content:center;align-items:center;gap:14px;padding:16px 20px 12px;flex-wrap:wrap}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+.selector{display:flex;align-items:center;gap:12px;padding:8px 16px 8px 10px;min-width:230px}
+.selector .ic{width:36px;height:36px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;font-size:17px;color:var(--ink-2)}
+.selector .t{font-size:13px;color:var(--ink-3);line-height:1.1}
+.selector .v{font-size:16px}
+.selector .chev{margin-left:auto;color:var(--ink-3)}
+.seg{display:flex;padding:4px;gap:2px}
+.seg span{padding:5px 16px;border-radius:12px;font-size:15px;color:var(--ink-2)}
+.seg span.on{background:var(--accent);color:#fff}
+.datenav{display:flex;align-items:center;gap:6px}
+.datenav .b{width:34px;height:34px;display:grid;place-items:center;color:var(--ink-2);font-size:15px}
+.datenav .cur{padding:6px 20px;font-size:16px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 20px}
+.panel{position:relative;padding:0 0 12px}
+.tb{display:flex;align-items:center;gap:8px;padding:10px 12px}
+.pill{border:1px solid var(--line);border-radius:16px;padding:3px 12px;font-size:14px;color:var(--ink);background:var(--panel);display:inline-flex;gap:6px;align-items:center}
+.pill .i{color:var(--ink-2)}
+.toggle{margin-left:auto;display:flex;border:1px solid var(--line);border-radius:16px;padding:3px}
+.toggle span{padding:2px 12px;border-radius:12px;font-size:14px;color:var(--ink-2)}
+.toggle span.on{background:var(--accent);color:#fff}
+.ctitle{position:absolute;left:12px;top:56px;z-index:2;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:6px 36px 6px 12px;box-shadow:var(--shadow)}
+.ctitle b{display:block;font-size:17px;font-weight:700;line-height:1.2}
+.ctitle span{font-size:14px;color:var(--ink-2)}
+.ctitle .info{position:absolute;right:10px;top:8px;width:16px;height:16px;border:1px solid var(--ink-3);border-radius:50%;font-size:11px;color:var(--ink-3);display:grid;place-items:center}
+svg text{font-family:"Source Sans 3",sans-serif}
+.legend{display:flex;justify-content:center;gap:8px;padding-top:2px}
+.chipyear{border:1.5px solid var(--year);color:var(--year);border-radius:16px;padding:2px 12px;font-size:14px}
+.chipnorm{border:1.5px dashed var(--ink-2);color:var(--ink-2);border-radius:16px;padding:2px 12px;font-size:14px}
+.chipadd{border:1px solid var(--line);border-radius:50%;width:28px;height:28px;display:grid;place-items:center;color:var(--ink-2)}
+.rankbar{margin:14px 20px 0;padding:0}
+.rankbar .head{display:flex;align-items:center;gap:10px;padding:10px 16px;font-size:15px;color:var(--ink-2)}
+.rankbar .head b{color:var(--ink);font-weight:600}
+.rankbar .head .sp{flex:1}
+.bottom{display:grid;grid-template-columns:2fr 1fr;gap:14px;padding:0 20px 28px;margin-top:14px}
+.facts{padding:12px 18px 16px}
+.facts h3{font-size:17px;font-weight:700;margin:2px 0 10px}
+.fact{display:flex;gap:12px;padding:8px 0;border-top:1px solid var(--bg);font-size:15px;color:var(--ink)}
+.fact:first-of-type{border-top:0}
+.fact .k{min-width:84px;font-size:22px;line-height:1.1;font-weight:600}
+.fact .k.w{color:var(--warm)} .fact .k.c{color:var(--cold)}
+.fact .d{color:var(--ink-2)}
+.fact .d strong{color:var(--ink);font-weight:600}
+.heat-legend{display:flex;align-items:center;gap:8px;justify-content:center;font-size:13px;color:var(--ink-2);padding-top:4px}
+.heat-legend .bar{width:220px;height:10px;border-radius:5px;background:linear-gradient(90deg,#2F6DB5,#9DBCE0,#F4F4F4,#EBA49B,#C8323C)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="burger">☰</div>
+  <div class="brand">Метеоаналитика <span>Центрально-Лесной заповедник</span></div>
+  <nav>
+    <a class="on">Обзор</a><a>Тренды</a><a>Сравнение</a><a>Станции</a><a>Агроклимат</a><a>Данные и отчёты</a>
+  </nav>
+  <div class="latest">Данные по<b>31 декабря 2025</b></div>
+</header>
+
+<div class="controls">
+  <div class="box selector"><div class="ic">🌡</div><div><div class="t">Параметр</div><div class="v">Температура воздуха</div></div><div class="chev">⌄</div></div>
+  <div class="box selector"><div class="ic">⌖</div><div><div class="t">Станция</div><div class="v">Фёдоровское</div></div><div class="chev">⌄</div></div>
+  <div style="display:flex;flex-direction:column;gap:6px;align-items:center">
+    <div class="box seg"><span>Месяц</span><span class="on">Сезон</span><span>Год</span><span>Период</span></div>
+    <div class="datenav"><div class="box b">«</div><div class="box b">‹</div><div class="box cur">Лето 2024</div><div class="box b">›</div><div class="box b">»</div></div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="box panel">
+    <div class="tb"><span class="pill"><span class="i">⤓</span>Скачать</span><span class="pill"><span class="i">⚙</span>Настройки</span>
+      <div class="toggle"><span class="on">Значения</span><span>Отклонения</span></div></div>
+    <div class="ctitle"><b>Температура воздуха</b><span>Среднесуточная, норма 1991–2020</span><span class="info">i</span></div>
+    <svg id="spag" viewBox="0 0 640 380" width="100%"></svg>
+    <div class="legend"><span class="chipyear">2024 ✎</span><span class="chipnorm">Норма 1991–2020 ✕</span><span class="chipadd">+</span></div>
+  </div>
+  <div class="box panel">
+    <div class="tb"><span class="pill"><span class="i">⤓</span>Скачать</span><span class="pill"><span class="i">⚙</span>Настройки</span>
+      <div class="toggle"><span class="on">По месяцам</span><span>По дням</span></div></div>
+    <div class="ctitle"><b>Отклонение от нормы</b><span>Средняя за месяц, °C</span><span class="info">i</span></div>
+    <svg id="heat" viewBox="0 0 640 380" width="100%"></svg>
+    <div class="heat-legend">−4 °C <span class="bar"></span> +4 °C</div>
+  </div>
+</div>
+
+<div class="bottom">
+  <div class="box">
+    <div class="rankbar" style="margin:0"><div class="head"><b>Лето по годам</b>средняя температура за июнь–август, место 2024 года: 5 из 36<span class="sp"></span><span class="pill">Скрыть ⌃</span></div></div>
+    <svg id="rank" viewBox="0 0 900 200" width="100%"></svg>
+  </div>
+  <div class="box facts">
+    <h3>Коротко о лете 2024</h3>
+    <div class="fact"><div class="k w">+1,8 °C</div><div class="d">к норме, <strong>5-е самое тёплое</strong> лето за 36 лет</div></div>
+    <div class="fact"><div class="k">115 %</div><div class="d">нормы осадков, 304 мм</div></div>
+    <div class="fact"><div class="k w">8 дней</div><div class="d">волна жары с 11 июля, до 28,9 °C</div></div>
+    <div class="fact"><div class="k w">4</div><div class="d">суточных рекорда тепла: 28, 29 июня, 1, 2 июля</div></div>
+    <div class="fact"><div class="k">2676 °C</div><div class="d">сумма активных температур, на 482 °C выше средней</div></div>
+  </div>
+</div>
+
+<script>
+let seed=11; const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
+(function(){
+  const svg=document.getElementById('spag'),W=640,H=380,L=44,R=14,T=110,B=30,n=92;
+  const x=i=>L+(W-L-R)*i/(n-1), y=t=>T+(H-T-B)*(25-t)/(25-7);
+  const norm=i=>15.2+3.4*Math.sin(Math.PI*(i+8)/(n+16));
+  const ser=(sh,a)=>{let z=0;return Array.from({length:n},(_,i)=>{z=z*.8+(rnd()-.5)*a;return norm(i)+sh+z})};
+  const p=v=>v.map((t,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(t).toFixed(1)).join(' ');
+  let s='';
+  for(let t=8;t<=24;t+=4)s+=`<line x1="${L}" x2="${W-R}" y1="${y(t)}" y2="${y(t)}" stroke="#E6E9EE"/><text x="${L-8}" y="${y(t)+4}" text-anchor="end" font-size="12" fill="#8A909C">${t} °C</text>`;
+  [['Июн',0],['Июл',30],['Авг',61]].forEach(([m,i])=>s+=`<text x="${x(i)+2}" y="${H-8}" font-size="13" fill="#5B6270">${m}</text>`);
+  for(let k=0;k<35;k++)s+=`<path d="${p(ser((rnd()-.5)*1.8,3.2))}" fill="none" stroke="#9AA1AD" stroke-width="1" opacity=".45"/>`;
+  s+=`<path d="${p(Array.from({length:n},(_,i)=>norm(i)))}" fill="none" stroke="#1E2229" stroke-width="2" stroke-dasharray="6 5"/>`;
+  seed=77;const v=ser(1.8,3.6);v[30]+=3.5;v[31]+=4.5;v[32]+=2.5;
+  s+=`<path d="${p(v)}" fill="none" stroke="#941333" stroke-width="2.4"/>`;
+  s+=`<circle cx="${x(31)}" cy="${y(v[31])}" r="4.5" fill="#941333"/><rect x="${x(31)+8}" y="${y(v[31])-26}" width="122" height="22" rx="6" fill="#941333"/><text x="${x(31)+14}" y="${y(v[31])-10}" font-size="13" fill="#fff">1 июля 2024: 22,6 °C</text>`;
+  svg.innerHTML=s;
+})();
+(function(){
+  const svg=document.getElementById('heat'),W=640,H=380,L=44,R=10,T=110,B=26,yrs=[];for(let y=2005;y<=2025;y++)yrs.push(y);
+  const cw=(W-L-R)/12,ch=(H-T-B)/yrs.length,M=['Я','Ф','М','А','М','И','И','А','С','О','Н','Д'];
+  const col=a=>{const c=Math.max(-1,Math.min(1,a/4));const mix=(p,q,t)=>p.map((v,i)=>Math.round(v+(q[i]-v)*t));
+    const w=[244,244,244],r=[200,50,60],b=[47,109,181];const m=c>=0?mix(w,r,c):mix(w,b,-c);return `rgb(${m})`};
+  let s='';seed=5;
+  yrs.forEach((yr,j)=>{M.forEach((m,i)=>{let a=(rnd()-.45)*5+(yr-2005)*.06;if(yr===2024&&i>=5&&i<=7)a=[2.2,1.9,1.4][i-5];
+    s+=`<rect x="${L+i*cw+1}" y="${T+j*ch+1}" width="${cw-2}" height="${ch-2}" rx="2" fill="${col(a)}"/>`});
+    if(yr%5===0||yr===2024)s+=`<text x="${L-8}" y="${T+j*ch+ch/2+4}" text-anchor="end" font-size="12" fill="${yr===2024?'#941333':'#8A909C'}" ${yr===2024?'font-weight="700"':''}>${yr}</text>`});
+  const j=yrs.indexOf(2024);s+=`<rect x="${L+5*cw}" y="${T+j*ch}" width="${3*cw}" height="${ch}" fill="none" stroke="#1E2229" stroke-width="2" rx="2"/>`;
+  M.forEach((m,i)=>s+=`<text x="${L+i*cw+cw/2}" y="${H-8}" text-anchor="middle" font-size="12" fill="#5B6270">${m}</text>`);
+  svg.innerHTML=s;
+})();
+(function(){
+  const svg=document.getElementById('rank'),W=900,H=200,L=40,R=12,T=14,B=26;const yrs=[];for(let y=1990;y<=2025;y++)yrs.push(y);
+  seed=21;const vals=yrs.map(y=>15.6+(y-1990)*.045+(rnd()-.5)*2.2);vals[yrs.indexOf(2024)]=18.7;vals[yrs.indexOf(2010)]=19.9;
+  const lo=13.5,hi=20.5,bw=(W-L-R)/yrs.length,y=v=>T+(H-T-B)*(hi-v)/(hi-lo);let s='';
+  [14,16,18,20].forEach(t=>s+=`<line x1="${L}" x2="${W-R}" y1="${y(t)}" y2="${y(t)}" stroke="#E6E9EE"/><text x="${L-6}" y="${y(t)+4}" text-anchor="end" font-size="12" fill="#8A909C">${t}°</text>`);
+  yrs.forEach((yr,i)=>{s+=`<rect x="${L+i*bw+2}" y="${y(vals[i])}" width="${bw-4}" height="${H-B-y(vals[i])}" rx="2" fill="${yr===2024?'#941333':'#B9BFC9'}"/>`;
+    if(yr%5===0)s+=`<text x="${L+i*bw+bw/2}" y="${H-8}" text-anchor="middle" font-size="12" fill="#5B6270">${yr}</text>`});
+  s+=`<line x1="${L}" x2="${W-R}" y1="${y(16.8)}" y2="${y(16.8)}" stroke="#1E2229" stroke-width="1.5" stroke-dasharray="6 5"/><rect x="${L+6}" y="${y(16.8)-22}" width="92" height="18" rx="4" fill="#fff"/><text x="${L+10}" y="${y(16.8)-9}" font-size="12" fill="#1E2229">норма 16,8 °C</text>`;
+  svg.innerHTML=s;
+})();
+</script>
+</body>
+</html>
