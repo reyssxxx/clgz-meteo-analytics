@@ -16,7 +16,7 @@ const CTL = {
   compare: ['var', 'station', 'cmp', 'settings'],
   stations: ['var', 'period'],
   agro: ['station', 'period', 'settings'],
-  data: ['station', 'period', 'settings'],
+  data: ['var', 'station', 'period', 'settings'],
   forecast: ['station'],
 };
 const PERIOD_PAGES = new Set(Object.keys(CTL).filter(p => CTL[p].includes('period')));
@@ -137,7 +137,7 @@ async function api(path, params = {}, withPeriod = true) {
 }
 function apiUrl(path, extra = {}) {
   const base = S.base;
-  return `${path}?${new URLSearchParams({ ds: S.ds, station: S.station, base, clean: S.clean, fill: S.fill, ...periodParams(), ...extra })}`;
+  return `${path}?${new URLSearchParams({ ds: S.ds, station: S.station, var: S.var, base, clean: S.clean, fill: S.fill, ...periodParams(), ...extra })}`;
 }
 
 // ------------------------------------------------------------------ Plotly
@@ -343,9 +343,9 @@ async function renderOverview(main) {
       <div class="tb">${dlBtn('ch-years', 'график')}<span class="sp"></span>
         ${isYears ? toggle('yearsMode', [['values', 'Значения'], ['anom', 'Отклонения']], UI.yearsMode) : ZOOM_HINT}</div>
       ${panelTitle(v.label + (cum ? ', нарастающим итогом' : ''), isYears ? `${label} на фоне всех лет наблюдений станции` : `${label}, по месяцам`,
-        isYears ? 'Каждая серая линия — тот же период в другой год наблюдений. Пунктир — среднее за выбранный период (годы задаются в настройках), цветная линия — выбранный период.' : '')}
+        isYears ? 'Каждая серая линия — тот же период в другой год наблюдений. Пунктир — среднее за выбранный период (годы задаются в настройках), цветная линия — выбранный период. В подсказке указано число лет для каждой даты.' : '')}
       <div class="chart" id="ch-years"></div>
-      ${isYears ? `<div class="legend"><span class="chip year">${esc(label)}</span><span class="chip norm">Среднее ${esc(o.ranking.base_label || o.base.join('–'))}</span><span class="chip others">Другие годы: ${o.years.lines.length}</span></div>` : ''}
+      ${isYears ? `<div class="legend"><span class="chip year">${esc(label)}</span><span class="chip norm">Среднее за выбранный период</span><span class="chip others">Другие годы: ${o.years.lines.length}</span></div>` : ''}
     </div>
     <div class="box panel">
       <div class="tb">${dlBtn('ch-heat', 'отклонения')}</div>
@@ -363,11 +363,17 @@ async function renderOverview(main) {
     </div>
     <div class="box facts">${factsHtml(o.facts, label)}</div>
   </div>`;
-  drawYears(o.years, o.base);
+  drawYears(o.years);
   drawHeat(o.heatmap);
   drawRank(o.ranking);
   $('#yearsMode')?.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return;
-    UI.yearsMode = b.dataset.v; $$('#yearsMode button').forEach(x => x.classList.toggle('on', x === b)); drawYears(o.years, o.base); });
+    UI.yearsMode = b.dataset.v; $$('#yearsMode button').forEach(x => x.classList.toggle('on', x === b)); drawYears(o.years); });
+}
+function yearsLabel(n) {
+  return `${n} ${plural(n, ['год', 'года', 'лет'])}`;
+}
+function parameterDifference(a, b, v) {
+  return v.id === 'wind_dir' ? ((a - b + 540) % 360) - 180 : a - b;
 }
 function rankTitle() {
   if (S.kind === 'month') return `${cap(MONTHS[S.i])} по годам`;
@@ -376,7 +382,7 @@ function rankTitle() {
   return 'Тот же период по годам';
 }
 
-function drawYears(y, base) {
+function drawYears(y) {
   const v = y.var;
   const u = v.unit;
   if (y.mode === 'series') {
@@ -384,7 +390,7 @@ function drawYears(y, base) {
     if (y.band) tr.push({ x: y.x, y: y.band.hi, mode: 'lines', line: { width: 0 }, hoverinfo: 'skip' },
       { x: y.x, y: y.band.lo, mode: 'lines', line: { width: 0 }, fill: 'tonexty', fillcolor: 'rgba(42,100,57,.10)', name: 'Tmin…Tmax', hoverinfo: 'skip' });
     const ni = tr.length;
-    tr.push({ x: y.x, y: y.norm, mode: 'lines', name: 'Среднее', line: { color: C.ink, width: 1.6, dash: 'dash' }, hoverinfo: 'none' });
+    tr.push({ x: y.x, y: y.norm, mode: 'lines', name: 'Среднее за выбранный период', line: { color: C.ink, width: 1.6, dash: 'dash' }, hoverinfo: 'none' });
     tr.push({ x: y.x, y: y.y, type: v.sum ? 'bar' : 'scatter', mode: 'lines', name: v.label, marker: { color: C.accent },
       line: { color: C.accent, width: 2 }, hoverinfo: 'none' });
     tr.push(dotTrace());
@@ -394,7 +400,7 @@ function drawYears(y, base) {
     else followDot(el, [ni, ni + 1], tr.length - 1, pts => {
       const val = pts.find(p => p.curveNumber === ni + 1), nrm = pts.find(p => p.curveNumber === ni);
       return `<b>${monthName(pts[0].x)}</b><br>${val ? fmt(val.y) + ' ' + u : '—'}` +
-        (val && nrm ? `<br><span style="color:${C.ink2}">среднее ${fmt(nrm.y)}, ${fmt(val.y - nrm.y, 1, true)}</span>` : '');
+        (nrm ? `<br><span style="color:${C.ink2}">среднее ${fmt(nrm.y)} (${yearsLabel(y.base_years[nrm.pointNumber])})${val ? ', ' + fmt(parameterDifference(val.y, nrm.y, v), 1, true) : ''}</span>` : '');
     });
     return;
   }
@@ -406,18 +412,18 @@ function drawYears(y, base) {
   const layout = { xaxis: { type: 'date', tickformat: '%-d %b', dtick: 'M1' },
     yaxis: { ticksuffix: ' ' + u, zeroline: anom, zerolinecolor: C.ink3 }, annotations: ann };
   if (anom) {
-    const d = y.current.y.map((c, k) => c === null || y.norm[k] === null ? null : c - y.norm[k]);
+    const d = y.current.y.map((c, k) => c === null || y.norm[k] === null ? null : parameterDifference(c, y.norm[k], v));
     const pos = v.sum ? C.wet : C.warm, neg = v.sum ? C.dry : C.cold;
     tr.push({ x: y.x, y: d, type: 'bar', name: 'Отклонение', marker: { color: d.map(z => z >= 0 ? pos : neg) }, hoverinfo: 'none' });
     const el = plot('ch-years', tr, { ...layout, hovermode: 'x', bargap: .15 });
-    barFocus(el, 0, pt => `<b>${ruDate(String(pt.x))}</b><br>${fmt(pt.y, 1, true)} ${u} к среднему` +
+    barFocus(el, 0, pt => `<b>${ruDate(String(pt.x))}</b><br>${fmt(pt.y, 1, true)} ${u} к среднему (${yearsLabel(y.base_years[pt.pointNumber])})` +
       `<br><span style="color:${C.ink2}">${v.sum ? 'накоплено' : 'было'} ${fmt(y.current.y[pt.pointNumber])} ${u}</span>`);
     return;
   }
   // все годы серыми линиями: наведение на любую линию выводит её на первый план
   const L = y.lines.length;
   for (const l of y.lines) tr.push({ x: y.x, y: l.y, name: String(l.year), mode: 'lines', line: { color: C.other, width: 1 }, opacity: .38, hoverinfo: 'none' });
-  tr.push({ x: y.x, y: y.norm, mode: 'lines', name: `Среднее ${base.join('–')}`, line: { color: C.ink, width: 2, dash: 'dash' }, hoverinfo: 'none' });
+  tr.push({ x: y.x, y: y.norm, mode: 'lines', name: 'Среднее за выбранный период', line: { color: C.ink, width: 2, dash: 'dash' }, hoverinfo: 'none' });
   tr.push({ x: y.x, y: y.current.y, mode: 'lines', name: String(y.current.year), line: { color: C.accent, width: 2.6 }, hoverinfo: 'none' });
   tr.push(dotTrace());
   const el = plot('ch-years', tr, { ...layout, hovermode: 'closest', hoverdistance: 24 });
@@ -426,7 +432,7 @@ function drawYears(y, base) {
   lineFocus(el, L + 2, styleOf, pt => {
     const day = ruDate(String(pt.x), false);
     const k = pt.pointNumber, nrm = y.norm[k];
-    const dev = nrm === null || pt.curveNumber === L ? '' : `<br><span style="color:${C.ink2}">${fmt(pt.y - nrm, 1, true)} ${u} к среднему</span>`;
+    const dev = nrm === null ? '' : `<br><span style="color:${C.ink2}">${pt.curveNumber === L ? 'В среднем' : fmt(parameterDifference(pt.y, nrm, v), 1, true) + ' ' + u + ' к среднему'} (${yearsLabel(y.base_years[k])})</span>`;
     return `<b>${esc(pt.data.name)}</b>   ${fmt(pt.y)} ${u}<br><span style="color:${C.ink2}">${y.cumulative ? 'на ' : ''}${day}</span>${dev}`;
   }, L + 2);
 }
@@ -441,7 +447,7 @@ function drawHeat(h) {
     xaxis: { tickvals: [...Array(12).keys()], ticktext: MSHORT, showgrid: false, linecolor: 'rgba(0,0,0,0)' },
     yaxis: { autorange: 'reversed', showgrid: false, dtick: h.years.length > 12 ? 5 : 1, linecolor: 'rgba(0,0,0,0)' } });
   cellFocus(el, pt => `<b>${cap(MONTHS[pt.x])} ${pt.y}</b><br>${fmt(pt.z, 1, true)} ${esc(h.unit)}` +
-    `<br><span style="color:${C.ink2}">${pt.z > 0 ? (h.inverted ? 'влажнее' : 'теплее') : (h.inverted ? 'суше' : 'холоднее')} среднего</span>`,
+    `<br><span style="color:${C.ink2}">${pt.z > 0 ? (h.inverted ? 'влажнее' : 'теплее') : (h.inverted ? 'суше' : 'холоднее')} среднего (${yearsLabel(h.base_years[pt.x])})</span>`,
   pt => [pt.x - .5, pt.x + .5, pt.y - .5, pt.y + .5]);
 }
 
@@ -461,7 +467,7 @@ function yearBars(id, years, values, colors, ref = null, layout = {}) {
 }
 
 function drawRank(r) {
-  if (!r.years.length) { $('#ch-rank').innerHTML = '<div class="empty">Период длиннее года: сравнивать не с чем.</div>'; return; }
+  if (!r.years.length) { $('#ch-rank').innerHTML = '<div class="empty">Недостаточно сопоставимых лет для выбранного периода.</div>'; return; }
   const v = r.var;
   const sorted = r.values.filter(x => x !== null).sort((a, b) => b - a);
   const el = yearBars('ch-rank', r.years, r.values, r.years.map(y => y === r.selected ? C.accent : '#BFC5C2'), r.norm, {
@@ -493,7 +499,7 @@ function factsHtml(f, label) {
 /* То, что сейчас сводят вручную в Excel: суточная таблица за месяц или декадная за период */
 async function renderTables(main) {
   const mode = S.kind === 'month' ? 'daily' : 'decades';
-  const t = await api('/api/table', { mode });
+  const [t, review] = await Promise.all([api('/api/table', { mode }), api('/api/quality/selection', { var: S.var, mode })]);
   const cols = t.columns;
   const cell = (c, v, title = '') => {
     if (v === null || v === undefined) return '<td class="num na">—</td>';
@@ -505,7 +511,7 @@ async function renderTables(main) {
   const sortButton = (key, label, fullLabel = label) => `<button type="button" class="dt-sort" data-sort="${key}"
     aria-label="Сортировать по столбцу «${esc(fullLabel)}»" title="Сортировать по столбцу «${esc(fullLabel)}»">${esc(label)}<span aria-hidden="true">↕</span></button>`;
   const head = `<thead><tr><th rowspan="2" class="first">${sortButton('date', mode === 'daily' ? 'Дата' : 'Период')}</th>${groups.map(g => `<th colspan="${g.n}" class="grp">${esc(g.name)}</th>`).join('')}
-    ${mode === 'daily' ? `<th rowspan="2" class="num">${sortButton('obs', 'Сроков')}</th>` : ''}</tr>
+    ${mode === 'daily' ? `<th rowspan="2" class="num">${sortButton('obs', t.coverage_label || 'Сроков')}</th>` : ''}</tr>
     <tr>${cols.map(c => `<th class="num">${sortButton(c.key, c.label, `${c.group} · ${c.label}`)}</th>`).join('')}</tr></thead>`;
   const sumRow = (r, cls, label, firstCell = esc(label || r.label)) => `<tr class="${cls}"><td class="first">${firstCell}</td>${cols.map(c => {
     const v = r.values[c.key];
@@ -544,7 +550,7 @@ async function renderTables(main) {
       body += sumRow(monthSummary(b), 'mon', b.label, monthButton);
       if (!expanded) continue;
       b.rows.filter(r => r.kind === 'decade').forEach(r => {
-        body += sumRow(r, 'decr');
+        body += sumRow(r, 'decr', r.start_day ? `${r.label} (${r.start_day}–${r.end_day})` : r.label);
       });
     }
     const tot = t.total;
@@ -580,7 +586,7 @@ async function renderTables(main) {
       </div>
       <span class="hint2" role="status"></span>
     </div>
-    <div class="tablewrap dtwrap"><table class="t dt">${head}<tbody></tbody></table></div></div>`;
+    <div class="tablewrap dtwrap"><table class="t dt">${head}<tbody></tbody></table></div></div>${reviewHtml(review)}`;
   const table = main.querySelector('.dt');
   const filter = main.querySelector('.table-filter');
   let sortKey = '', direction = 1;
@@ -656,7 +662,7 @@ async function renderTrends(main) {
   const scopeName = (scopeOpts.find(o => o[0] === sc) || scopeOpts[0])[1].toLowerCase();
   main.innerHTML = `
   ${t.stripes ? `<div class="box panel"><div class="tb">${dlBtn('ch-stripes', 'полосы')}</div>
-    ${panelTitle('Полосы потепления', 'Каждая полоса — год: цвет показывает отклонение средней годовой температуры от среднего за выбранные годы', 'Визуализация климатолога Эда Хокинса: синие полосы — годы холоднее нормы, красные — теплее.', 'static')}
+    ${panelTitle('Полосы потепления', `Отклонение годовой температуры от среднего ${t.stripes.base_label}`, 'Синие полосы показывают более холодные годы, красные — более тёплые.', 'static')}
     <div class="chart stripes" id="ch-stripes"></div></div>` : ''}
   <div class="grid21 mt">
     <div class="box panel"><div class="tb">${dlBtn('ch-trend', 'тренд')}</div>
@@ -748,7 +754,7 @@ async function renderCompare(main) {
     tr.push({ x, y: r.cycle.a, mode: 'lines+markers', name: 'A', line: { color: C.other, width: 2.4 }, marker: { size: 6 }, hovertemplate: `A: %{y:.1f} ${v.unit}<extra></extra>` },
       { x, y: r.cycle.b, mode: 'lines+markers', name: 'B', line: { color: C.accent, width: 2.4 }, marker: { size: 6 }, hovertemplate: `B: %{y:.1f} ${v.unit}<extra></extra>` });
   }
-  const diff = r.cycle.b.map((b, k) => b === null || r.cycle.a[k] === null ? null : b - r.cycle.a[k]);
+  const diff = r.cycle.b.map((b, k) => b === null || r.cycle.a[k] === null ? null : parameterDifference(b, r.cycle.a[k], v));
   tr.push({ type: 'bar', x, y: diff, yaxis: 'y2', name: 'B − A', marker: { color: diff.map(d => d >= 0 ? (v.sum ? C.wet : C.warm) : (v.sum ? C.dry : C.cold)) },
     opacity: .55, hovertemplate: `B − A: %{y:+.2f} ${v.unit}<extra></extra>` });
   tr.forEach(t => { t.hoverinfo = 'none'; delete t.hovertemplate; });
@@ -757,8 +763,8 @@ async function renderCompare(main) {
     yaxis2: { ...AX, domain: [0, .22], zeroline: true, zerolinecolor: C.ink3 }, xaxis: { anchor: 'y2' } });
   const cycleTip = pts => {
     const k = MSHORT.indexOf(pts[0].x), a = r.cycle.a[k], b = r.cycle.b[k];
-    return `<b>${cap(MONTHS[k])}</b><br><span style="color:${C.ink2}">A</span> ${fmt(a)} ${v.unit}<br><span style="color:${C.accent}">B</span> ${fmt(b)} ${v.unit}` +
-      (a !== null && b !== null ? `<br>разница ${fmt(b - a, 2, true)}` : '');
+    return `<b>${cap(MONTHS[k])}</b><br><span style="color:${C.ink2}">A</span> ${fmt(a)} ${v.unit} (${yearsLabel(r.cycle.years_a[k])})<br><span style="color:${C.accent}">B</span> ${fmt(b)} ${v.unit} (${yearsLabel(r.cycle.years_b[k])})` +
+      (a !== null && b !== null ? `<br>разница ${fmt(diff[k], 2, true)}` : '');
   };
   if (v.sum) barFocus(cel, 1, pt => cycleTip([pt]));
   else followDot(cel, [0, 1], tr.length - 1, cycleTip);
@@ -810,7 +816,7 @@ async function renderStations(main, entering) {
     ${mx.map((x, k) => { const d = parseISO(x); const a = series.a[k], b = series.b[k], df = series.diff[k];
       return `<tr><td>${daily ? shortDate(x) : `${cap(MONTHS[d.getMonth()])} ${d.getFullYear()}`} </td><td class="num">${a === null ? '<span class="na">н/п</span>' : fmt(a)}</td><td class="num">${b === null ? '<span class="na">н/п</span>' : fmt(b)}</td>
       <td class="num">${df === null ? '—' : `<b class="${df > 0 ? 'warm' : df < 0 ? 'cold' : ''}">${fmt(df, 2, true)}</b>`}</td></tr>`; }).join('')}
-    </tbody></table></div><p class="note">${daily ? '«н/п» — нет полного дневного значения. Разница — только за дни с данными у обеих станций.' : '«н/п» — месяц неполный на этой станции. Разница — только для месяцев, валидных на обеих.'}</p></div>`;
+    </tbody></table></div><p class="note">${daily ? '«н/п» — нет полного дневного значения. Разница — только за дни с данными у обеих станций.' : '«н/п» — месяц неполный на этой станции. Разница — только для месяцев, валидных на обеих.'} Высота датчиков в исходном наборе не указана.</p></div>`;
   if (r.suspicious.length) {
     const items = r.suspicious.map(x => { const d = parseISO(x.month); return `${MONTHS[d.getMonth()]} ${d.getFullYear()} (${fmt(x.diff, 1, true)} ${esc(u)} при обычных ${fmt(x.typical, 1, true)})`; });
     main.insertAdjacentHTML('afterbegin', `<div class="box alert"><b>Возможен сбой датчика.</b> Разница между станциями резко выбивается из обычной: ${items.join('; ')}.
@@ -830,7 +836,7 @@ async function renderStations(main, entering) {
     return `<b>${mLabels[k]}</b><br><span style="color:${CA}">${esc(r.a)}</span> ${fmt(series.a[k])} ${u}<br><span style="color:${CB}">${esc(r.b)}</span> ${fmt(series.b[k])} ${u}` +
       (series.diff[k] !== null ? `<br>разница ${fmt(series.diff[k], 2, true)}` : ''); });
   const hrs = r.diurnal.hours.map(h => `${String(h).padStart(2, '0')}:00`);
-  const dd = r.diurnal.a.map((a, k) => a === null || r.diurnal.b[k] === null ? null : a - r.diurnal.b[k]);
+  const dd = r.diurnal.a.map((a, k) => a === null || r.diurnal.b[k] === null ? null : parameterDifference(a, r.diurnal.b[k], v));
   const pd = plot('ch-pd', [
     { x: hrs, y: r.diurnal.a, mode: 'lines+markers', line: { color: CA, width: 2.4, shape: 'spline' }, marker: { size: 5 }, hoverinfo: 'none' },
     { x: hrs, y: r.diurnal.b, mode: 'lines+markers', line: { color: CB, width: 2.4, shape: 'spline' }, marker: { size: 5 }, hoverinfo: 'none' },
@@ -845,6 +851,7 @@ async function renderStations(main, entering) {
 function pairSentence(r) {
   const d = r.mean_diff, u = r.var.unit;
   if (d === null) return '';
+  if (r.var.id === 'wind_dir') return `Средняя угловая разница: ${fmt(d, 2, true)}° по ${r.common_days} общим дням.`;
   const word = Math.abs(d) < 0.05 ? 'практически не отличается от' : (d > 0 ? 'выше, чем на' : 'ниже, чем на');
   return `В среднем на «${esc(r.a)}» ${esc(r.var.label.toLowerCase())} ${word} «${esc(r.b)}»${Math.abs(d) < 0.05 ? '' : ` — на ${fmt(Math.abs(d), 2)} ${esc(u)}`}; выше в ${r.days_a_higher} днях из ${r.common_days}.`;
 }
@@ -947,20 +954,20 @@ async function renderForecast(main) {
   const f = await api('/api/forecast', {}, false);
   const D = f.daily, H = f.hourly, ctx = f.context;
   const cards = D.time.map((t, k) => {
-    const d = parseISO(t), mean = (D.temperature_2m_max[k] + D.temperature_2m_min[k]) / 2, c = ctx.days[k];
-    const dev = c && c.mean !== null ? mean - c.mean : null;
+    const d = parseISO(t), mean = D.temperature_mean[k], c = ctx.days[k];
+    const dev = mean !== null && c && c.mean !== null ? mean - c.mean : null;
     return `<div class="box fday">
       <div class="fd">${k === 0 ? 'Сегодня' : cap(WD[d.getDay()])}, ${d.getDate()} ${MONTHS_GEN[d.getMonth()]}</div>
       <div class="ft"><b>${fmt(D.temperature_2m_max[k], 0)}°</b><span>${fmt(D.temperature_2m_min[k], 0)}°</span></div>
       <div class="fw">ветер до ${fmt(D.wind_speed_10m_max[k], 0)} м/с, порывы ${fmt(D.wind_gusts_10m_max[k], 0)}</div>
       ${D.precipitation_sum[k] > 0.2 ? `<div class="fw">осадки ${fmt(D.precipitation_sum[k], 1)} мм</div>` : '<div class="fw">без осадков</div>'}
-      ${dev !== null ? `<div class="fdev ${dev > 1 ? 'warm' : dev < -1 ? 'cold' : ''}">${Math.abs(dev) < 1 ? 'как обычно' : `${dev > 0 ? 'теплее' : 'холоднее'} обычного на ${fmt(Math.abs(dev), 1)}°`}</div>` : ''}
+      ${dev !== null ? `<div class="fdev ${dev > 1 ? 'warm' : dev < -1 ? 'cold' : ''}">${Math.abs(dev) < 1 ? 'близко к среднему' : `${dev > 0 ? 'теплее' : 'холоднее'} среднего на ${fmt(Math.abs(dev), 1)}°`} · ${yearsLabel(c.years)}</div>` : ''}
     </div>`;
   }).join('');
   main.innerHTML = `<div class="fcards">${cards}</div>
   <div class="grid21 mt">
     <div class="box panel"><div class="tb">${dlBtn('ch-ft', 'прогноз')}</div>
-      ${panelTitle('Температура воздуха по часам', 'прогноз на 7 дней и среднее за те же даты', `Пунктир — средняя суточная температура этих дат по станции «${ctx.station}» за все годы наблюдений (${ctx.days[0] ? ctx.days[0].years : 0} лет). Прогноз — внешняя модель, собственного прогноза сервис не строит.`)}
+      ${panelTitle('Температура воздуха по часам', 'прогноз на 7 дней и среднее за те же даты', `Пунктир — средняя суточная температура этих дат по станции «${ctx.station}» за выбранный период. В карточках указан вклад по годам для каждой даты. Прогноз получен из Open-Meteo.`)}
       <div class="chart" id="ch-ft"></div></div>
     <div class="box panel"><div class="tb">${dlBtn('ch-fw', 'ветер')}</div>
       ${panelTitle('Ветер', 'средняя скорость и порывы, м/с', '')}
@@ -969,7 +976,7 @@ async function renderForecast(main) {
   <p class="note">Источник прогноза: ${esc(f.source)}, точка ${fmt(f.lat, 2)}° с. ш., ${fmt(f.lon, 2)}° в. д. (район заповедника). Обновляется раз в час.
     Среднее за те же даты — по станции «${esc(ctx.station)}»; её можно сменить в строке управления.</p>`;
   const ctxX = [], ctxY = [];
-  D.time.forEach((t, k) => { const c = ctx.days[k]; if (c && c.mean !== null) { ctxX.push(`${t}T00:00`, `${t}T23:59`); ctxY.push(c.mean, c.mean); } });
+  D.time.forEach((t, k) => { const c = ctx.days[k]; ctxX.push(`${t}T00:00`, `${t}T23:59`); ctxY.push(c?.mean ?? null, c?.mean ?? null); });
   const ft = plot('ch-ft', [
     { x: H.time, y: H.temperature_2m, mode: 'lines', line: { color: C.accent, width: 2.4, shape: 'spline' }, hoverinfo: 'none' },
     { x: ctxX, y: ctxY, mode: 'lines', line: { color: C.ink, width: 1.6, dash: 'dash' }, hoverinfo: 'none' }, dotTrace()],
@@ -1021,6 +1028,213 @@ function stationCards(files, roles) {
   }).join('');
 }
 
+function observationTime(value) {
+  return esc(String(value).replace('T', ' ').slice(0, 16));
+}
+
+function reviewHtml(review) {
+  const dateRange = row => observationTime(row['Время']) +
+    (row['Конец'] === row['Время'] ? '' : ` — ${observationTime(row['Конец'])}`);
+  const source = review.var.id === review.source.id ? '' : ` · по данным «${esc(review.source.label)}»`;
+  return `<div class="box panel mt">
+    <div class="head"><b>Проверка месячных расчётов</b><span>${esc(review.var.label)}, ${esc(review.var.unit)}${source}</span></div>
+    <p class="note">Использованные измерения образуют суточные значения, из которых рассчитывается месячное. Контекстные предупреждения остаются в данных для проверки специалистом.</p>
+    <div class="tablewrap"><table class="t"><thead><tr><th>Месяц</th><th class="num">Значение</th><th class="num">Полных дней</th>
+      <th class="num">Использовано</th><th class="num">Исключено</th><th>Причины исключений</th></tr></thead><tbody>
+      ${review.audit.map(m => {
+        const causes = [];
+        if (m['Неполные сутки']) causes.push(`неполные сутки × ${m['Неполные сутки']}`);
+        if (m['Неполный месяц']) causes.push(`неполный месяц × ${m['Неполный месяц']}`);
+        if (m['Причины при импорте']) causes.push(m['Причины при импорте']);
+        return `<tr><td>${esc(m['Месяц'])}</td><td class="num">${fmt(m['Значение'])}</td>
+          <td class="num">${m['Полных дней']} из ${m['Число дней в выборе']}</td><td class="num">${m['Использовано']}</td>
+          <td class="num">${m['Исключено']}</td><td>${esc(causes.join(', ') || '—')}</td></tr>`;
+      }).join('')}</tbody></table></div>
+    <details class="note"><summary>Важные аномалии · ${review.important_total}</summary>
+      ${review.important.length ? `<ul>${review.important.map(i => `<li>${dateRange(i)} · ${esc(i['Статус'])} · ${esc(i['Проблема'])} ·
+        ${fmt(i['Значение'])} ${esc(review.source.unit)}. ${esc(i['Контекст'])}</li>`).join('')}</ul>`
+        : '<p>За выбранный период важных предупреждений нет.</p>'}
+      ${review.important_total > review.important.length ? '<p>Все эпизоды доступны в Excel.</p>' : ''}
+    </details>
+    <details class="note"><summary>Исключения при импорте · ${review.excluded_at_import}</summary>
+      ${review.exclusions.length ? `<ul>${review.exclusions.map(i => `<li>${observationTime(i['Время'])} ·
+        ${fmt(i['Значение'])} ${esc(review.source.unit)} · ${esc(i['Причина'])} · ${esc(i['Файл'])}</li>`).join('')}</ul>`
+        : '<p>За выбранный период исключений при импорте нет.</p>'}
+      ${review.excluded_at_import > review.exclusions.length ? '<p>Полный список доступен в Excel.</p>' : ''}
+    </details>
+  </div>`;
+}
+
+function recoveryPreviewHtml(preview) {
+  const formatDate = value => ruDate(String(value).slice(0, 10));
+  const candidates = preview.station_candidates;
+  const donors = candidates.filter(c => c.gap_days_covered && c.overlap_days && preview.parameter === 't_air');
+  return `
+    <p><b>Дней без полного значения: ${preview.missing_days} из ${preview.days}</b>.
+      Из них с неполными наблюдениями: ${preview.incomplete_days}.</p>
+    ${preview.gaps.length ? `<div class="tablewrap"><table class="t"><thead><tr><th>Пропуск</th><th class="num">Дней</th></tr></thead><tbody>
+      ${preview.gaps.slice(0, 8).map(g => `<tr><td>${formatDate(g.start)} — ${formatDate(g.end)}</td><td class="num">${g.days}</td></tr>`).join('')}
+      </tbody></table></div>` : ''}
+    ${preview.gaps.length > 8 ? '<p>Остальные интервалы войдут в черновик.</p>' : ''}
+    ${candidates.length ? `<details><summary>Покрытие других станций</summary><div class="tablewrap"><table class="t"><thead><tr><th>Станция</th>
+      <th class="num">Дней пропуска с данными</th><th class="num">Общих дней в архиве</th></tr></thead><tbody>
+      ${candidates.map(c => `<tr><td>${esc(c.station)}</td><td class="num">${c.gap_days_covered}</td><td class="num">${c.overlap_days}</td></tr>`).join('')}
+      </tbody></table></div></details>` : ''}
+    <form id="recovery-form" class="recovery-form">
+      <label>Источник<select id="recovery-source" class="field">
+        <option value="archive">Летопись природы</option>
+        ${donors.map(c => `<option value="station:${esc(c.station)}">${esc(c.station)}</option>`).join('')}
+      </select></label>
+      <div id="recovery-archive" class="recovery-form">
+        <label>Шаг записи<select id="recovery-resolution" class="field"><option value="day">Сутки</option><option value="month">Месяц</option></select></label>
+        <label>Том и страница или ссылка<input id="recovery-reference" class="field" maxlength="500"></label>
+        <label>Дата и значение, по одной строке <textarea id="recovery-values" class="field" rows="3"></textarea></label>
+      </div>
+      <div class="actions">
+        <button class="btn" type="submit">Предпросмотр восстановления</button>
+        <button class="pill" id="recovery-draft" type="button">Скачать черновик JSON</button>
+      </div>
+    </form>
+    <div id="recovery-proposal" aria-live="polite"></div>
+    <details id="recovery-saved"><summary>Сохранённые значения</summary>
+      <div class="recovery-form"><label>Шаг графика<select id="recovery-chart-step" class="field">
+        <option value="day">Сутки</option><option value="month">Месяц</option></select></label></div>
+      <div id="recovery-series"></div>
+    </details>`;
+}
+
+function recoveryRowsHtml(rows, unit) {
+  if (!rows.length) return '<p>За выбранный период нет значений.</p>';
+  return `<div class="tablewrap"><table class="t"><thead><tr><th>Дата</th><th class="num">Значение, ${esc(unit)}</th>
+    <th>Источник</th><th class="num">90% ошибок до</th></tr></thead><tbody>
+    ${rows.slice(0, 30).map(r => `<tr><td>${esc(r.resolution === 'month' ? r.date.slice(0, 7) : r.date)}</td>
+      <td class="num">${fmt(r.value, 2)}</td><td>${esc(r.source)}${r.has_observation ? ' · есть официальное значение' : ''}
+      ${r.validation_days ? `<small> · проверено на ${r.validation_days} днях</small>` : ''}</td>
+      <td class="num">${fmt(r.error90, 2)}</td></tr>`).join('')}
+    </tbody></table></div>${rows.length > 30 ? `<p>Показано 30 из ${rows.length} значений.</p>` : ''}`;
+}
+
+async function inspectRecovery(panel, button) {
+  const result = $('#recovery-result', panel);
+  button.disabled = true;
+  result.textContent = 'Проверяю покрытие…';
+  try {
+    const preview = await api('/api/recovery/preview', { var: S.var });
+    result.innerHTML = recoveryPreviewHtml(preview);
+    const find = id => $('#' + id, panel);
+    const form = find('recovery-form');
+    const source = find('recovery-source');
+    const proposal = find('recovery-proposal');
+    const step = find('recovery-resolution');
+    const saved = find('recovery-saved');
+    const invalidated = () => { proposal.replaceChildren(); };
+    const updateExample = () => {
+      const d = preview.start;
+      find('recovery-values').placeholder = `${step.value === 'month' ? d.slice(0, 7) : d}; 5,2`;
+    };
+    updateExample();
+    form.addEventListener('input', invalidated);
+    source.addEventListener('change', () => { find('recovery-archive').hidden = source.value !== 'archive'; });
+    step.addEventListener('change', updateExample);
+    const selection = () => {
+      const fromArchive = source.value === 'archive';
+      return { dataset: preview.dataset, station: preview.station, parameter: preview.parameter,
+        start: preview.start, end: preview.end, source: fromArchive ? 'archive' : 'station',
+        resolution: fromArchive ? step.value : 'day',
+        donor: fromArchive ? '' : source.value.slice('station:'.length),
+        reference: find('recovery-reference').value.trim() };
+    };
+    find('recovery-draft').addEventListener('click', () => {
+      const draft = { ...preview, status: 'draft', selection: selection() };
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([JSON.stringify(draft, null, 2) + '\n'], { type: 'application/json' }));
+      link.download = `восстановление-${preview.parameter}-${preview.start}.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    });
+
+    const refreshSaved = async () => {
+      const display = find('recovery-series');
+      const resolution = find('recovery-chart-step').value;
+      display.textContent = 'Загружаю значения…';
+      try {
+        const data = await api('/api/recovery/saved', { var: preview.parameter, resolution });
+        if (resolution !== find('recovery-chart-step').value) return;
+        const rows = data.rows.filter(r => r.resolution === resolution);
+        display.innerHTML = (data.rows.length ? `<a class="pill" href="${apiUrl('/api/recovery/report.xlsx')}">Скачать отдельный Excel</a>` : '')
+          + (rows.length ? '<div id="recovery-chart" class="chart short"></div>' : '') + recoveryRowsHtml(rows, preview.unit);
+        if (!rows.length) return;
+        const observed = data.observations;
+        const traces = [{ name: 'Наблюдения', x: observed.dates, y: observed.values, mode: 'lines+markers',
+          marker: { size: 4, color: C.ink }, connectgaps: false }];
+        for (const [method, name, color, symbol] of [['archive', 'Летопись', C.accent, 'diamond'],
+                                                   ['station_offset', 'Оценка по станции', C.warm, 'triangle-up']]) {
+          const sourceRows = rows.filter(r => r.method === method && !r.has_observation);
+          if (!sourceRows.length) continue;
+          traces.push({ name, x: sourceRows.map(r => r.date), y: sourceRows.map(r => r.value), mode: 'markers',
+            marker: { size: 8, color, symbol }, text: sourceRows.map(r => esc(r.source)),
+            hovertemplate: '%{x} · %{y}<br>%{text}<extra></extra>',
+            ...(method === 'station_offset' ? { error_y: { type: 'data', array: sourceRows.map(r => r.error90) } } : {}) });
+        }
+        plot('recovery-chart', traces, { showlegend: true, legend: { orientation: 'h' }, yaxis: { ticksuffix: ' ' + preview.unit } });
+      } catch (e) {
+        if (e !== STALE) display.textContent = e.message;
+      }
+    };
+    saved.addEventListener('toggle', () => { if (saved.open) refreshSaved(); });
+    find('recovery-chart-step').addEventListener('change', refreshSaved);
+
+    const post = async (payload, save = false) => {
+      const response = await fetch('/api/recovery/proposal?save=' + save, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Проверьте формат дат и значений.');
+      return data;
+    };
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const payload = selection();
+      proposal.textContent = 'Проверяю значения…';
+      const draftState = proposal.textContent;
+      try {
+        if (payload.source === 'archive') {
+          payload.entries = find('recovery-values').value.trim().split(/\n/).filter(line => line.trim()).map(line => {
+            const parts = line.split(';').map(part => part.trim());
+            const format = payload.resolution === 'month' ? /^\d{4}-\d{2}$/ : /^\d{4}-\d{2}-\d{2}$/;
+            if (parts.length !== 2 || !format.test(parts[0]) || !/^[+-]?\d+(?:[.,]\d+)?$/.test(parts[1])) {
+              throw new Error('Укажите дату и числовое значение через точку с запятой.');
+            }
+            return { date: parts[0] + (payload.resolution === 'month' ? '-01' : ''), value: Number(parts[1].replace(',', '.')) };
+          });
+        }
+        const data = await post(payload);
+        if (proposal.textContent !== draftState) return;
+        proposal.innerHTML = `<p><b>Предложено значений: ${data.rows.length}</b></p>` + recoveryRowsHtml(data.rows, preview.unit)
+          + data.skipped.map(r => `<p>Месяц ${r.month}: ${esc(r.reason)}</p>`).join('')
+          + (data.rows.length ? '<button class="btn" id="recovery-apply" type="button">Сохранить в отдельный ряд</button>' : '');
+        const apply = find('recovery-apply');
+        apply?.addEventListener('click', async () => {
+          apply.disabled = true;
+          try {
+            const accepted = await post({ ...payload, preview_token: data.preview_token }, true);
+            proposal.textContent = `Добавлено значений: ${accepted.saved}. Повторяющиеся записи учтены один раз.`;
+            if (saved.open) refreshSaved();
+            else saved.open = true;
+          } catch (error) {
+            proposal.textContent = error.message;
+          }
+        });
+      } catch (e) {
+        proposal.textContent = e.message;
+      }
+    });
+  } catch (e) {
+    if (e !== STALE) result.textContent = e.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function renderData(main) {
   const [sets, q] = await Promise.all([fetch('/api/datasets').then(r => r.json()), api('/api/quality', {}, false)]);
   const roles = [['', '— не использовать —'], ['__time', 'Дата и время'], ['__station', 'Станция'], ...META.all_variables.map(v => [v.id, `${v.label}, ${v.unit}`])];
@@ -1030,7 +1244,7 @@ async function renderData(main) {
     <div class="stack">
       <div class="box panel"><div class="head"><b>Наборы данных</b></div>
         <div class="dslist">${sets.map(s => `<button data-ds="${s.id}" class="${s.id === S.ds ? 'on' : ''}">${esc(s.name)}</button>`).join('')}</div>
-        <label class="drop" id="drop"><input type="file" id="file" multiple accept=".csv,.txt,.xlsx,.xls" hidden>
+        <label class="drop" id="drop"><input type="file" id="file" multiple accept=".csv,.txt,.xlsx" hidden>
           <b>Добавить файлы с метеостанции</b><br>В том же формате, например kr1_2026.csv или ame60_2022.csv — данные допишутся в ряд станции.<br>Перетащите сюда или нажмите.</label>
       </div>
       <div class="box panel"><div class="head"><b>Отчёты</b></div>
@@ -1038,6 +1252,15 @@ async function renderData(main) {
         <div class="actions" style="padding:8px 16px 0"><a class="btn" href="${apiUrl('/api/report.html')}">${ICON.doc}Отчёт HTML</a>
           <a class="pill" href="${apiUrl('/api/report.xlsx')}">${ICON.dl}Таблицы Excel</a></div>
         <p class="note">Все станции и файлы сразу, без интерфейса: <code>python -m meteo.batch папка</code></p></div>
+      <div class="box panel" id="recovery-panel"><div class="head"><b>Восстановление пропусков</b></div>
+        <p class="note">${esc(S.station)} · ${esc(varById(S.var).label)} · ${esc(periodLabel())}.
+          Черновик содержит интервалы и сведения об источниках. Официальный ряд хранится отдельно.</p>
+        <div class="actions recovery-actions">
+          <button class="btn" id="recovery-preview" type="button">Проверить пропуски</button>
+          <a class="pill" href="https://www.clgz.ru/node/18449" target="_blank" rel="noopener noreferrer">Летопись природы</a>
+        </div>
+        <div class="note recovery-result" id="recovery-result" aria-live="polite"></div>
+      </div>
     </div>
     <div class="stack">
       ${stationCards(q.files, roles)}
@@ -1055,11 +1278,15 @@ async function renderData(main) {
           : '<div class="note">Подозрительных значений не найдено.</div>'}
         <p class="note">Пропусков в ряду: ${q.gaps_total}.</p></div>
       ${q.issues.length ? `<div class="box panel"><div class="head"><b>Подозрительные значения</b><span>первые ${q.issues.length}</span></div>
-        <div class="tablewrap" style="max-height:300px;overflow:auto"><table class="t"><thead><tr><th>Время</th><th>Параметр</th><th class="num">Значение</th><th>Проблема</th></tr></thead><tbody>
-        ${q.issues.map(i => `<tr><td>${esc(String(i['Время']).replace('T', ' ').slice(0, 16))}</td><td>${esc(i['Параметр'])}</td><td class="num">${fmt(i['Значение'])}</td><td>${esc(i['Проблема'])}</td></tr>`).join('')}
+        <div class="tablewrap" style="max-height:300px;overflow:auto"><table class="t"><thead><tr><th>Время</th><th>Параметр</th><th class="num">Значение</th><th>Проблема</th><th>Приоритет</th><th>Контекст</th></tr></thead><tbody>
+        ${q.issues.map(i => `<tr><td>${observationTime(i['Время'])}</td><td>${esc(i['Параметр'])}</td><td class="num">${fmt(i['Значение'])}</td>
+          <td>${esc(i['Проблема'])}</td><td>${esc(i['Приоритет'])}</td><td>${esc(i['Контекст'])}</td></tr>`).join('')}
         </tbody></table></div></div>` : ''}
     </div>
   </div>`;
+  const recoveryPanel = $('#recovery-panel', main);
+  const recoveryButton = $('#recovery-preview', recoveryPanel);
+  recoveryButton.addEventListener('click', () => inspectRecovery(recoveryPanel, recoveryButton));
   const cz = q.completeness;
   plot('ch-comp', [{ type: 'heatmap', z: cz.z, x: cz.vars, y: cz.years, zmin: 0, zmax: 100, colorscale: [[0, '#F4E3C4'], [0.7, '#E3ECE5'], [1, C.accent]],
     showscale: false, xgap: 2, ygap: 2, hoverinfo: 'none' }],

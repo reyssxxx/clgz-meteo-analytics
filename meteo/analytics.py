@@ -9,7 +9,8 @@ import pandas as pd
 from scipy import stats
 
 from . import coverage as CV
-from .schema import VARIABLES
+from .quality import quality_issues
+from .schema import STATION_PREFIXES, VARIABLES
 
 FREQS = {"D": "Сутки", "W": "Неделя", "MS": "Месяц", "QS-DEC": "Сезон", "YS": "Год"}
 SEASON_NAMES = {12: "Зима", 3: "Весна", 6: "Лето", 9: "Осень"}
@@ -52,28 +53,36 @@ def _agg(resampler, how: str):
     return getattr(resampler, how)()
 
 
+def difference(value, reference, var: str):
+    diff = value - reference
+    return (diff + 180) % 360 - 180 if VARIABLES[var].period_agg == "circmean" else diff
+
+
 # =============================================================== агрегация
 
-def to_daily(df: pd.DataFrame) -> pd.DataFrame:
+def to_daily(df: pd.DataFrame, station: str | None = None) -> pd.DataFrame:
     """Срочные данные → сутки по правилам задания (см. coverage.py).
 
     Для каждого параметра отдельно: сутки берутся, только если валидных значений этого параметра
     достаточно (АМЕ-60 — 72 срока из 96, Сокол М1 — 18 разных часов из 24); иначе NaN.
-    Суточное значение — по всем валидным значениям за сутки (среднее; для порывов — максимум).
+    Суточное среднее — по всем валидным наблюдениям за сутки.
+    Максимальный порыв сохраняется отдельно для экстремумов и пороговых показателей.
     Tmax/Tmin — экстремумы срочной температуры за полные сутки.
     """
     df = df.drop(columns="station", errors="ignore")
-    if not is_subdaily(df):
+    if station not in STATION_PREFIXES.values() and not is_subdaily(df):
         out = df.copy()
         out.index = out.index.normalize()
         return out.groupby(level=0).mean(numeric_only=True)
-    rule = CV.day_rule(df.index)
+    rule = CV.day_rule(df.index, station)
     r = df.resample("D")
     out = {}
     for v in _vars(df):
         ok = CV.valid_days(df.index[df[v].notna().to_numpy()], rule)
         val = _agg(r[v], VARIABLES[v].daily_agg)
         out[v] = val.where(ok.reindex(val.index, fill_value=False))
+    if "wind_gust" in out:
+        out["wind_gust_max"] = r["wind_gust"].max().where(out["wind_gust"].notna())
     out = pd.DataFrame(out)
     if "t_air" in df:  # экстремумы суток из срочной температуры, если отдельных колонок нет
         ok = CV.valid_days(df.index[df["t_air"].notna().to_numpy()], rule).reindex(out.index, fill_value=False)
@@ -165,7 +174,7 @@ def period_summary(daily: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
         meta = VARIABLES[v]
         rows.append({
             "Параметр": f"{meta.label}, {meta.unit}",
-            "Среднее": s.mean(),
+            "Среднее": _circmean(s) if meta.period_agg == "circmean" else s.mean(),
             "Ст. откл.": s.std(),
             "Минимум": s.min(),
             "Дата минимума": s.idxmin().date(),
@@ -196,54 +205,12 @@ def day_counts(daily: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
     add("Очень жаркие дни (Tmax ≥ 30 °C)", g("t_max") >= 30 if "t_max" in d else None)
     add("Морозные дни (Tmin ≤ −20 °C)", g("t_min") <= -20 if "t_min" in d else None)
     add("Дни со снежным покровом", g("snow_depth") > 0 if "snow_depth" in d else None)
-    add("Дни с ветром ≥ 15 м/с", g("wind_gust") >= 15 if "wind_gust" in d else None)
+    gust_max = g("wind_gust_max", g("wind_gust"))
+    add("Дни с порывами ветра ≥ 15 м/с", gust_max >= 15 if gust_max is not None else None)
     return pd.DataFrame(items)
 
 
 # =============================================================== качество данных
-
-def quality_issues(df: pd.DataFrame, stuck_hours: int = 6) -> pd.DataFrame:
-    """Подозрительные значения: вне физического диапазона, резкие скачки, «залипание»
-    датчика, Tmin > Tmax. Возвращает таблицу (время, параметр, значение, проблема)."""
-    df = df.drop(columns="station", errors="ignore")
-    issues = []
-    sub = is_subdaily(df)
-    for v in _vars(df):
-        meta, s = VARIABLES[v], df[v]
-        lo, hi = meta.limits
-        bad = s[(s < lo) | (s > hi)]
-        issues += [(t, v, x, f"Вне диапазона [{lo}; {hi}]") for t, x in bad.items()]
-        if sub and meta.max_step_per_hour:
-            ss = s.dropna()
-            ts = ss.index.to_series()
-            h_prev = ts.diff().dt.total_seconds() / 3600
-            h_next = -ts.diff(-1).dt.total_seconds() / 3600
-            d_prev, d_next = ss - ss.shift(1), ss - ss.shift(-1)
-            big_prev = (h_prev <= 3) & (d_prev.abs() > meta.max_step_per_hour * h_prev)
-            big_next = (h_next <= 3) & (d_next.abs() > meta.max_step_per_hour * h_next)
-            # выброс: точка резко отличается от обоих соседей в одну сторону — ошибка измерения
-            spike = big_prev & big_next & (np.sign(d_prev) == np.sign(d_next))
-            # скачок: резкий сдвиг уровня, который сохраняется (может быть реальным, например фронт)
-            shift = big_prev & ~spike & ~spike.shift(1, fill_value=False)
-            issues += [(t, v, ss[t], f"Выброс {d_prev[t]:+.1f} / {-d_next[t]:+.1f}") for t in ss[spike].index]
-            issues += [(t, v, ss[t], f"Скачок {d_prev[t]:+.1f} за {h_prev[t]:.0f} ч") for t in ss[shift].index]
-        if sub and v in ("t_air", "rh", "pressure", "wind_speed"):
-            ss = s.dropna()
-            run_id = (ss != ss.shift()).cumsum()
-            run_len = ss.groupby(run_id).transform("size")
-            step_h = infer_step(df).total_seconds() / 3600
-            natural = (ss == 0) if v != "t_air" else pd.Series(False, index=ss.index)
-            if v == "rh":
-                natural |= ss >= 95  # насыщение при тумане/осадках держится часами — это норма
-            stuck = ss[(run_len * step_h >= stuck_hours) & ~natural]
-            first = stuck.groupby(run_id[stuck.index]).head(1)
-            issues += [(t, v, x, f"Одинаковое значение ≥ {stuck_hours} ч") for t, x in first.items()]
-    if {"t_min", "t_max"} <= set(df.columns):
-        m = df["t_min"] > df["t_max"]
-        issues += [(t, "t_min", df.at[t, "t_min"], "Tmin > Tmax") for t in df.index[m]]
-    out = pd.DataFrame(issues, columns=["Время", "Параметр", "Значение", "Проблема"])
-    return out.sort_values("Время").reset_index(drop=True)
-
 
 def mask_issues(df: pd.DataFrame, issues: pd.DataFrame, kinds: tuple[str, ...] = ("Вне диапазона", "Выброс")) -> pd.DataFrame:
     """Заменяет на NaN значения с проблемами указанных типов."""
@@ -283,28 +250,26 @@ def completeness(daily: pd.DataFrame) -> pd.DataFrame:
 
 # =============================================================== климатическая норма и аномалии
 
-def doy_climatology(daily: pd.DataFrame, var: str, base: tuple | None = None, window: int = 31) -> pd.DataFrame:
-    """Норма и ст. отклонение для каждого дня года (сглажено окном ±window/2 дней)."""
+def calendar_day(index: pd.DatetimeIndex):
+    """Номер календарной даты на шкале високосного года (29 февраля имеет свой номер)."""
+    return index.day_of_year + (~index.is_leap_year & (index.month > 2))
+
+
+def doy_climatology(daily: pd.DataFrame, var: str, base: tuple | None = None) -> pd.DataFrame:
+    """Среднее за выбранный период, разброс и число лет для каждой календарной даты."""
     s = daily[var].loc[slice(*base) if base else slice(None)].dropna()
-    doy = s.index.day_of_year.where(s.index.day_of_year <= 365, 365)
-    g = s.groupby(doy)
-    mean, std = g.mean().reindex(range(1, 366)), g.std().reindex(range(1, 366))
-    pad = window // 2
-
-    def smooth(x):
-        ext = pd.concat([x.iloc[-pad:], x, x.iloc[:pad]])
-        return ext.rolling(window, center=True, min_periods=1).mean().iloc[pad:-pad]
-
-    return pd.DataFrame({"norm": smooth(mean).to_numpy(), "std": smooth(std).to_numpy()}, index=range(1, 366))
+    g = s.groupby(calendar_day(s.index))
+    mean = g.apply(_circmean) if VARIABLES[var].daily_agg == "circmean" else g.mean()
+    out = pd.DataFrame({"norm": mean, "std": g.std(), "years": g.count()}).reindex(range(1, 367))
+    out["years"] = out["years"].fillna(0).astype(int)
+    return out
 
 
 def daily_anomalies(daily: pd.DataFrame, var: str, base: tuple | None = None) -> pd.DataFrame:
     clim = doy_climatology(daily, var, base)
-    doy = np.minimum(daily.index.day_of_year, 365)
-    norm = clim["norm"].reindex(doy).to_numpy()
-    std = clim["std"].reindex(doy).to_numpy()
-    out = pd.DataFrame({"value": daily[var], "norm": norm, "std": std}, index=daily.index)
-    out["anomaly"] = out["value"] - out["norm"]
+    ref = clim.reindex(calendar_day(daily.index)).set_axis(daily.index)
+    out = ref.assign(value=daily[var])
+    out["anomaly"] = difference(out["value"], out["norm"], var)
     out["z"] = out["anomaly"] / out["std"]
     return out
 
@@ -320,23 +285,33 @@ def monthly_anomalies(daily: pd.DataFrame, var: str, base: tuple | None = None) 
     Для сумм (осадки) дополнительно — % от нормы."""
     m = aggregate(daily[[var]], "MS")[var]
     b = m.loc[slice(*base) if base else slice(None)]
-    norm_by_month = b.groupby(b.index.month).mean()
-    std_by_month = b.groupby(b.index.month).std()
+    g = b.groupby(b.index.month)
+    norm_by_month = g.apply(_circmean) if VARIABLES[var].period_agg == "circmean" else g.mean()
+    std_by_month = g.std()
     out = pd.DataFrame({"value": m})
     out["norm"] = norm_by_month.reindex(m.index.month).to_numpy()
     out["std"] = std_by_month.reindex(m.index.month).to_numpy()
-    out["anomaly"] = out["value"] - out["norm"]
+    out["years"] = g.count().reindex(m.index.month, fill_value=0).to_numpy()
+    out["anomaly"] = difference(out["value"], out["norm"], var)
     out["z"] = out["anomaly"] / out["std"]
     if VARIABLES[var].period_agg == "sum":
         out["pct_of_norm"] = 100 * out["value"] / out["norm"]
     return out
 
 
-def monthly_norms(daily: pd.DataFrame, base: tuple | None = None) -> pd.DataFrame:
+def monthly_reference(daily: pd.DataFrame, base: tuple | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     m = aggregate(daily.loc[slice(*base) if base else slice(None)], "MS")
-    out = m.groupby(m.index.month).mean()
-    out.index.name = "Месяц"
-    return out
+    g = m.groupby(m.index.month)
+    mean, years = g.mean(), g.count()
+    for var in _vars(m):
+        if VARIABLES[var].period_agg == "circmean":
+            mean[var] = g[var].apply(_circmean)
+    months = pd.Index(range(1, 13), name="Месяц")
+    return mean.reindex(months), years.reindex(months, fill_value=0)
+
+
+def monthly_norms(daily: pd.DataFrame, base: tuple | None = None) -> pd.DataFrame:
+    return monthly_reference(daily, base)[0]
 
 
 # =============================================================== тренды
@@ -580,10 +555,7 @@ def compare_periods(daily: pd.DataFrame, a: tuple, b: tuple, alpha: float = 0.05
 
 def annual_cycle(daily: pd.DataFrame, start, end) -> pd.DataFrame:
     """Средний годовой ход (по месяцам) за период: для сумм — средняя месячная сумма."""
-    m = aggregate(daily.loc[start:end], "MS")
-    out = m.groupby(m.index.month).mean()
-    out.index.name = "Месяц"
-    return out.reindex(range(1, 13))
+    return monthly_reference(daily.loc[start:end])[0]
 
 
 # =============================================================== несколько станций
@@ -735,9 +707,9 @@ def diurnal(raw: pd.DataFrame, daily: pd.DataFrame, var: str, start, end, days=N
     if s.empty:
         return pd.DataFrame(columns=["value", "n"])
     how = "circmean" if VARIABLES[var].daily_agg == "circmean" else "mean"
-    g = s.groupby(s.index.hour)
-    val = g.apply(_circmean) if how == "circmean" else g.mean()
-    out = pd.DataFrame({"value": val, "n": s.groupby(s.index.hour).apply(lambda x: x.index.normalize().nunique())})
+    by_day_hour = _agg(s.groupby([s.index.normalize(), s.index.hour]), how)
+    by_hour = by_day_hour.groupby(level=1)
+    out = pd.DataFrame({"value": _agg(by_hour, how), "n": by_hour.count()})
     return out.reindex(range(24))
 
 
@@ -750,14 +722,14 @@ def pair_compare(raw_a, daily_a, raw_b, daily_b, var: str, start, end) -> dict:
     a = ma[var] if var in ma else pd.Series(dtype=float)
     b = mb[var] if var in mb else pd.Series(dtype=float)
     months = pd.DataFrame({"a": a, "b": b})
-    months["diff"] = months["a"] - months["b"]
+    months["diff"] = difference(months["a"], months["b"], var)
     da = daily_a[var].loc[start:end].dropna() if var in daily_a else pd.Series(dtype=float)
     db = daily_b[var].loc[start:end].dropna() if var in daily_b else pd.Series(dtype=float)
     common = da.index.intersection(db.index)
     ca = diurnal(raw_a, daily_a, var, start, end, common)
     cb = diurnal(raw_b, daily_b, var, start, end, common)
-    dd = (da.reindex(common) - db.reindex(common))
+    dd = difference(da.reindex(common), db.reindex(common), var)
     days = pd.DataFrame({"a": da, "b": db}).reindex(pd.date_range(start, end, freq="D"))
-    days["diff"] = days["a"] - days["b"]
+    days["diff"] = difference(days["a"], days["b"], var)
     return {"days": days, "months": months, "diurnal_a": ca, "diurnal_b": cb, "common_days": len(common),
             "mean_diff": dd.mean() if len(dd) else np.nan, "days_a_warmer": int((dd > 0).sum())}

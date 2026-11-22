@@ -46,6 +46,7 @@ class LoadReport:
     qc_column: str | None = None
     qc_flagged: dict[str, int] = field(default_factory=dict)   # параметр → число исключённых по флагу значений
     dup_conflict_rows: int = 0
+    exclusions: list[tuple] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [f"Файл: {self.filename}"]
@@ -282,6 +283,15 @@ def to_canonical(df: pd.DataFrame, mapping: dict[str, str], time_cols: list[str]
                  decimal: str = ".", report: LoadReport | None = None) -> pd.DataFrame:
     ts = _parse_time(df, time_cols)
     out = pd.DataFrame(index=pd.DatetimeIndex(ts, name="time"))
+    stations = df[station_col].astype(str).str.strip().to_numpy() if station_col in df.columns else (
+        np.repeat(station or "Станция", len(df)))
+    qc = find_qc_column(df.columns)
+    flags = df[qc].fillna("").astype(str).str.replace(" ", "", regex=False) if qc else pd.Series("", index=df.index)
+    dup = flags.str.contains(r"(?:^|;)dup_conflict(?:;|$)", regex=True).to_numpy()
+    if report is not None and qc:
+        report.qc_column = qc
+        report.dup_conflict_rows += int(dup.sum())
+    valid_dates = out.index.notna()
     for src, var in mapping.items():
         if src not in df.columns:
             continue
@@ -289,48 +299,41 @@ def to_canonical(df: pd.DataFrame, mapping: dict[str, str], time_cols: list[str]
         lo, hi = VARIABLES[var].limits
         # заглушка — только если значение ещё и физически невозможно (999 гПа — нормальное давление)
         is_sent = np.isin(vals, list(SENTINELS)) & ((vals < lo) | (vals > hi))
-        n_sent = int(is_sent.sum())
-        vals = np.where(is_sent, np.nan, vals)
         factor, note = _unit_factor(src, var)
         if factor != 1.0:
             vals = vals * factor
             if report is not None:
                 report.unit_conversions[src] = note
-        out[var] = vals
+        prefix = src.strip() + ":"
+        hit = flags.str.contains(rf"(?:^|;){re.escape(prefix)}", regex=True).to_numpy()
+        out[var] = np.where(is_sent | hit, np.nan, vals)
         if report is not None:
-            report.sentinels_removed += n_sent
-    # флаги качества: «параметр:причина» исключает только этот параметр, dup_conflict — всю строку
-    qc = find_qc_column(df.columns)
-    keep = np.ones(len(out), dtype=bool)
-    if qc is not None:
-        flags = df[qc].fillna("").astype(str).str.replace(" ", "", regex=False).to_numpy()
-        flags = pd.Series(flags)
-        dup = flags.str.contains(r"(?:^|;)dup_conflict(?:;|$)", regex=True).to_numpy()
-        for src, var in mapping.items():
-            if var not in out:
-                continue
-            hit = flags.str.contains(rf"(?:^|;){re.escape(src.strip())}:", regex=True).to_numpy()
-            if hit.any():
-                out.loc[hit, var] = np.nan
-            if report is not None:
+            report.sentinels_removed += int(is_sent.sum())
+            if qc:
                 report.qc_flagged[var] = report.qc_flagged.get(var, 0) + int(hit.sum())
-        keep = ~dup
-        if report is not None:
-            report.qc_column = qc
-            report.dup_conflict_rows += int(dup.sum())
-    if station_col and station_col in df.columns:
-        out["station"] = df[station_col].astype(str).str.strip().to_numpy()
-    else:
-        out["station"] = station or "Станция"
-    out = out[keep]
+            excluded = np.flatnonzero((is_sent | hit | dup) & valid_dates & np.isfinite(vals))
+            for i in excluded:
+                if dup[i]:
+                    reason = "dup_conflict"
+                elif hit[i]:
+                    reason = "; ".join(flag for flag in flags.iloc[i].split(";") if flag.startswith(prefix))
+                else:
+                    reason = "Значение-заглушка"
+                report.exclusions.append((stations[i], out.index[i], var, vals[i], reason, report.filename))
+    out["station"] = stations
+    out = out[~dup]
     bad = out.index.isna()
     out = out[~bad]
-    before = len(out)
-    out = out.reset_index().drop_duplicates(subset=["time", "station"], keep="first").set_index("time")
+    out = out.reset_index()
+    repeat = out.duplicated(subset=["time", "station"], keep="first")
     if report is not None:
         report.bad_timestamps += int(bad.sum())
-        report.duplicates_dropped += before - len(out)
-    return out.sort_index()
+        report.duplicates_dropped += int(repeat.sum())
+        for row in out.loc[repeat].to_dict("records"):
+            for var in (VARIABLES.keys() & row.keys()):
+                if pd.notna(row[var]):
+                    report.exclusions.append((row["station"], row["time"], var, row[var], "Дубль срока", report.filename))
+    return out.loc[~repeat].set_index("time").sort_index()
 
 
 def load(source: str | Path | bytes, filename: str | None = None,

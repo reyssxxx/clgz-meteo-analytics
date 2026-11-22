@@ -8,24 +8,31 @@ from __future__ import annotations
 
 import threading
 import uuid
+from io import BytesIO
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Literal
 from urllib.parse import quote
 
 import pandas as pd
 import plotly
+from openpyxl import Workbook
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, FiniteFloat
 
 from . import analytics as A
 from . import forecast as FC
+from . import quality as Q
+from . import recovery as R
 from . import tables as T
 from . import views as V
-from .loader import LoadReport, combine, load
+from .loader import LoadReport, combine, load, station_from_filename
 from .report import build_sheets, html_report, to_excel
-from .schema import VARIABLES
+from .schema import STATION_PREFIXES, VARIABLES
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
@@ -36,6 +43,9 @@ PLOTLY_JS = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
 CASE_ID = "clgz"
 CASE_NAME = "Центрально-Лесной заповедник, урочище «Красное»"
 CASE_DIR = DATA / "clgz"
+UPLOADS = CASE_DIR / "uploads"
+RECOVERY_STORE = DATA / ".recovery" / "values.sqlite3"
+ALLOWED = {".csv", ".txt", ".xlsx"}
 
 
 @dataclass
@@ -72,8 +82,8 @@ class Dataset:
                 issues = A.quality_issues(data)
                 # в расчёт идут значения после официальных флагов (применены при загрузке);
                 # наши дополнительные проверки (выбросы, «залипание») — только подсказки, данные не меняют
-                src = data
-                self.cache[key] = (data, A.to_daily(src), issues, A.is_subdaily(data))
+                subdaily = st in STATION_PREFIXES.values() or A.is_subdaily(data)
+                self.cache[key] = (data, A.to_daily(data, st), issues, subdaily)
         return self.cache[key]
 
     def dailies(self, clean: bool = True) -> dict[str, pd.DataFrame]:
@@ -93,11 +103,14 @@ class Dataset:
 
 
 STORE: dict[str, Dataset] = {}
+UPDATE_LOCK = threading.Lock()
 
 
 def _load_demos() -> None:
     """Загружает данные кейса при старте (имя функции сохранено для совместимости)."""
-    files = sorted(CASE_DIR.glob("*/*.csv"))
+    files = sorted(p for p in CASE_DIR.glob("*/*.csv") if p.parent != UPLOADS)
+    files.extend(sorted(p for p in UPLOADS.iterdir() if p.is_file() and p.suffix.lower() in ALLOWED)
+                 if UPLOADS.is_dir() else [])
     if files and CASE_ID not in STORE:
         ds = Dataset(CASE_ID, CASE_NAME, {f"{p.parent.name}/{p.name}": p.read_bytes() for p in files})
         ds.build()
@@ -184,35 +197,63 @@ async def upload(files: list[UploadFile] = File(...)):
     return {"id": ds.id, "name": ds.name}
 
 
-UPLOADS = DATA / "clgz" / "uploads"
-ALLOWED = {".csv", ".txt", ".xlsx", ".xls"}
+def _save_uploads(content: dict[str, bytes]) -> None:
+    UPLOADS.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=UPLOADS) as tmp:
+        staged = Path(tmp)
+        backups = staged / "previous"
+        backups.mkdir()
+        for name, data in content.items():
+            (staged / name).write_bytes(data)
+            current = UPLOADS / name
+            if current.is_file():
+                (backups / name).write_bytes(current.read_bytes())
+        replaced = []
+        try:
+            for name in content:
+                (staged / name).replace(UPLOADS / name)
+                replaced.append(name)
+        except OSError:
+            for name in reversed(replaced):
+                backup = backups / name
+                if backup.is_file():
+                    backup.replace(UPLOADS / name)
+                else:
+                    (UPLOADS / name).unlink()
+            raise
 
 
 @app.post("/api/datasets/{ds}/files")
-async def add_files(ds: str, files: list[UploadFile] = File(...)):
+def add_files(ds: str, files: list[UploadFile] = File(...)):
     """Новый файл с метеостанции в том же формате дописывается к данным без доработки кода:
     kr1_2026.csv → в ряд «Кр1 (поляна)», ame60_2022.csv → «АМЕ-60», файл другой станции — новая станция.
     Файлы набора заповедника сохраняются на диск и подхватываются при следующем запуске."""
-    d = get(ds)
-    added, old_files = [], dict(d.files)
+    content = {}
     for f in files:
         name = Path(f.filename or "file.csv").name
         if Path(name).suffix.lower() not in ALLOWED:
-            raise HTTPException(400, f"{name}: поддерживаются CSV, TXT и Excel.")
-        d.files[f"uploads/{name}"] = await f.read()
-        added.append(name)
-    try:
-        d.build()
-    except Exception as e:  # noqa: BLE001
-        d.files = old_files
-        d.build()
-        raise HTTPException(400, f"Не удалось прочитать файл: {e}")
-    if ds == CASE_ID:
-        UPLOADS.mkdir(parents=True, exist_ok=True)
-        for name in added:
-            (UPLOADS / name).write_bytes(d.files[f"uploads/{name}"])
-    from .loader import station_from_filename
-    return {"added": added, "stations": sorted({station_from_filename(n) for n in added})}
+            raise HTTPException(400, f"{name}: поддерживаются CSV, TXT и XLSX.")
+        if name in content:
+            raise HTTPException(400, f"{name}: имя файла повторяется в загрузке.")
+        content[name] = f.file.read()
+    uploads = {f"uploads/{name}": data for name, data in content.items()}
+    with UPDATE_LOCK:
+        d = get(ds)
+        updated = Dataset(d.id, d.name, d.files | uploads, dict(d.overrides))
+        try:
+            updated.build()
+            for name in uploads:
+                if not updated.reports[name].rows_out:
+                    raise ValueError(f"{Path(name).name}: нет корректных дат наблюдений.")
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"Не удалось прочитать файл: {e}") from e
+        if ds == CASE_ID:
+            try:
+                _save_uploads(content)
+            except OSError as e:
+                raise HTTPException(500, "Не удалось сохранить файлы на диск.") from e
+        STORE[ds] = updated
+    return {"added": list(content), "stations": sorted({station_from_filename(n) for n in content})}
 
 
 class Mapping(BaseModel):
@@ -224,17 +265,17 @@ class Mapping(BaseModel):
 
 @app.post("/api/datasets/{ds}/mapping")
 def set_mapping(ds: str, m: Mapping):
-    d = get(ds)
-    if m.file not in d.files:
-        raise HTTPException(404, "Файл не найден в наборе.")
-    old = dict(d.overrides)
-    d.overrides[m.file] = {"mapping": m.mapping, "time": m.time, "station": m.station}
-    try:
-        d.build()
-    except Exception as e:  # noqa: BLE001
-        d.overrides = old
-        d.build()
-        raise HTTPException(400, f"С таким сопоставлением файл не читается: {e}")
+    with UPDATE_LOCK:
+        d = get(ds)
+        if m.file not in d.files:
+            raise HTTPException(404, "Файл не найден в наборе.")
+        overrides = d.overrides | {m.file: {"mapping": m.mapping, "time": m.time, "station": m.station}}
+        updated = Dataset(d.id, d.name, d.files, overrides)
+        try:
+            updated.build()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"С таким сопоставлением файл не читается: {e}") from e
+        STORE[ds] = updated
     return {"ok": True}
 
 
@@ -257,6 +298,9 @@ def overview(var: str = "t_air", ds: str = Common["ds"], station: str | None = C
     # параметр, которого у станции нет (например, давление у АМЕ-60), — подставляем первый с данными
     if var not in daily or daily[var].notna().sum() == 0:
         have = [v for v in daily.columns if daily[v].notna().any()]
+        have = [v for v in have if v in VARIABLES]
+        if not have:
+            raise HTTPException(400, "Нет ни одного параметра с полными сутками.")
         var = "t_air" if "t_air" in have else have[0]
     return {"base": b, "years": V.years_chart(daily, var, s, e, b), "heatmap": V.anomaly_heatmap(daily, var, s, e, b),
             "ranking": V.ranking(daily, var, s, e, b), "facts": V.facts(daily, var, s, e, b, issues)}
@@ -330,7 +374,7 @@ def pair(var: str = "t_air", a: str | None = None, b: str | None = None, ds: str
 
 
 @app.get("/api/forecast")
-def forecast(ds: str = Common["ds"], station: str | None = Common["station"]):
+def forecast(ds: str = Common["ds"], station: str | None = Common["station"], base: str = Common["base"]):
     """Прогноз на 7 дней (Open-Meteo) + для контекста средняя температура тех же дат по станции."""
     try:
         f = FC.get_forecast(7)
@@ -342,11 +386,11 @@ def forecast(ds: str = Common["ds"], station: str | None = Common["station"]):
     _, daily, _, _ = d.station(st, True)
     ctx_rows = []
     if "t_air" in daily:
-        s = daily["t_air"].dropna()
-        for day in f["daily"]["time"]:
-            t = pd.Timestamp(day)
-            same = s[(s.index.month == t.month) & (s.index.day == t.day)]
-            ctx_rows.append({"date": day, "mean": float(same.mean()) if len(same) else None, "years": int(len(same))})
+        dates = pd.DatetimeIndex(f["daily"]["time"])
+        b = base_of(daily, base)
+        reference = A.doy_climatology(daily, "t_air", b).reindex(A.calendar_day(dates))
+        ctx_rows = [{"date": date, "mean": mean, "years": years}
+                    for date, mean, years in zip(f["daily"]["time"], reference["norm"], reference["years"])]
     return V.js({**f, "context": {"station": st, "days": ctx_rows}})
 
 
@@ -367,6 +411,153 @@ def quality(ds: str = Common["ds"], station: str | None = Common["station"], cle
     return V.quality(data, daily, issues, d.reports)
 
 
+@app.get("/api/quality/selection")
+def quality_selection(var: str = "t_air", mode: str = "", ds: str = Common["ds"], station: str | None = Common["station"],
+                      start: str | None = Common["start"], end: str | None = Common["end"],
+                      base: str = Common["base"], clean: bool = Common["clean"], fill: bool = Common["fill"]):
+    d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
+    st = station if station in d.raw["station"].unique() else min(d.raw["station"])
+    if var not in VARIABLES or var not in daily:
+        raise HTTPException(400, "Параметр недоступен для этой станции.")
+    exclusions = Q.exclusions_for(d.reports.values(), st)
+    source = Q.observation_var(data, var)
+    selected = Q.period_records(exclusions[exclusions["Параметр"] == source], s, e)
+    diagnostics = Q.period_records(issues[issues["Параметр"] == source], s, e)
+    important = Q.important_events(diagnostics, selected)
+    if mode == "daily":
+        s = (pd.Timestamp(start) if start else s).to_period("M").to_timestamp()
+        e = s + pd.offsets.MonthEnd(0)
+        monthly = T.monthly_rows(T.daily_table(data, daily, s, st), s)
+    elif mode == "decades":
+        monthly = T.monthly_rows(T.decade_table(daily, s, e), s)
+    else:
+        monthly = A.aggregate(daily[[var]].loc[s:e], "MS")
+    if var not in monthly:
+        monthly[var] = float("nan")
+    audit = Q.audit_months(data, daily, monthly, exclusions, var, s, e)
+    return V.js({"audit": audit, "important": important.head(50), "important_total": len(important),
+                 "exclusions": selected.head(20), "excluded_at_import": len(selected), "var": V.var_meta(var),
+                 "source": V.var_meta(source)})
+
+
+@app.get("/api/recovery/preview")
+def recovery_preview(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"],
+                     start: date | None = None, end: date | None = None, clean: bool = Common["clean"]):
+    d = get(ds)
+    names = sorted(d.raw["station"].unique())
+    st = station or names[0]
+    if st not in names:
+        raise HTTPException(404, "Станция не найдена в наборе.")
+    raw, daily, _, _ = d.station(st, clean)
+    if daily.empty or var not in VARIABLES or var not in daily or not daily[var].notna().any():
+        raise HTTPException(400, "Параметр недоступен для этой станции.")
+    first = start or daily.index.min().date()
+    last = end or daily.index.max().date()
+    if first > last:
+        raise HTTPException(400, "Дата начала должна быть не позже даты окончания.")
+    return V.js(R.preview(raw, d.dailies(clean), st, var, first, last) | {"dataset": d.id})
+
+
+class RecoveryEntry(BaseModel):
+    date: date
+    value: FiniteFloat
+
+
+class RecoveryRequest(BaseModel):
+    dataset: str = CASE_ID
+    station: str
+    parameter: str
+    start: date
+    end: date
+    source: Literal["archive", "station"]
+    resolution: Literal["day", "month"] = "day"
+    donor: str = ""
+    reference: str = Field(default="", max_length=500)
+    entries: list[RecoveryEntry] = Field(default_factory=list, max_length=3660)
+    preview_token: str = ""
+
+
+def _recovery_daily(ds, station, var, start, end):
+    d = get(ds)
+    if start > end:
+        raise HTTPException(400, "Дата начала должна быть не позже даты окончания.")
+    if station not in d.raw["station"].unique():
+        raise HTTPException(404, "Станция не найдена в наборе.")
+    _, daily, _, _ = d.station(station)
+    if var not in VARIABLES or var not in daily:
+        raise HTTPException(400, "Параметр недоступен для этой станции.")
+    return d, daily
+
+
+@app.post("/api/recovery/proposal")
+def recovery_proposal(request: RecoveryRequest, save: bool = False):
+    r = request
+    with UPDATE_LOCK:
+        d, daily = _recovery_daily(r.dataset, r.station, r.parameter, r.start, r.end)
+        skipped = []
+        try:
+            if r.source == "archive":
+                if not r.entries or not r.reference.strip():
+                    raise ValueError("Укажите значения и ссылку либо том и страницу Летописи.")
+                rows = R.archive_proposal(daily, r.parameter, r.start, r.end,
+                                          [(str(row.date), row.value) for row in r.entries],
+                                          r.reference.strip(), r.resolution)
+            else:
+                if r.parameter != "t_air" or r.resolution != "day":
+                    raise ValueError("Оценка по соседней станции доступна для суточной температуры воздуха.")
+                if r.donor == r.station or r.donor not in d.raw["station"].unique():
+                    raise ValueError("Выберите другую станцию из набора.")
+                _, donor, _, _ = d.station(r.donor)
+                if "t_air" not in donor:
+                    raise ValueError("В выбранной станции нет температуры воздуха.")
+                rows, skipped = R.station_proposal(daily["t_air"], donor["t_air"], r.start, r.end, r.donor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        token = R.proposal_token(d.id, r.station, r.parameter, rows)
+        if save and token != r.preview_token:
+            raise HTTPException(409, "Предпросмотр устарел. Проверьте предложенные значения ещё раз.")
+        count = R.save(RECOVERY_STORE, d.id, r.station, r.parameter, rows) if save and rows else 0
+    return {"rows": rows, "skipped": skipped, "saved": count, "preview_token": token}
+
+
+@app.get("/api/recovery/saved")
+def recovery_saved(station: str, start: date, end: date, ds: str = CASE_ID, var: str = "t_air",
+                   resolution: Literal["day", "month"] = "day"):
+    d, daily = _recovery_daily(ds, station, var, start, end)
+    rows = R.with_observation_status(R.saved(RECOVERY_STORE, d.id, station, var, start, end), daily, var)
+    official = R.observations(daily, var, resolution)
+    first = pd.Timestamp(start)
+    if resolution == "month":
+        first = first.to_period("M").start_time
+    clock = pd.date_range(first, end, freq="MS" if resolution == "month" else "D")
+    return V.js({"rows": rows, "observations": {"dates": clock, "values": official.reindex(clock)}})
+
+
+@app.get("/api/recovery/report.xlsx")
+def recovery_xlsx(station: str, start: date, end: date, ds: str = CASE_ID, var: str = "t_air"):
+    d, daily = _recovery_daily(ds, station, var, start, end)
+    rows = R.with_observation_status(R.saved(RECOVERY_STORE, d.id, station, var, start, end), daily, var)
+    if not rows:
+        raise HTTPException(404, "За выбранный период нет сохранённых восстановленных значений.")
+    records = pd.DataFrame([{
+        "Дата": row["date"], "Шаг": "Месяц" if row["resolution"] == "month" else "Сутки",
+        "Станция": station, "Параметр": VARIABLES[var].label, "Единица": VARIABLES[var].unit,
+        "Значение": row["value"], "Метод": "Летопись" if row["method"] == "archive" else "Поправка по станции",
+        "Источник": row["source"], "MAE": row["mae"], "90% ошибок до": row["error90"],
+        "Дней проверки": row["validation_days"],
+        "Статус": "Есть официальное значение" if row["has_observation"] else "Отдельный ряд",
+    } for row in rows])
+    scope = pd.DataFrame({"Поле": ["Станция", "Показатель", "Начало", "Конец"],
+                          "Значение": [station, VARIABLES[var].label, str(start), str(end)]})
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    Q.write_review_sheets(workbook, {"Восстановленные данные": records, "Параметры выборки": scope})
+    output = BytesIO()
+    workbook.save(output)
+    return _download(output.getvalue(), "Восстановленные данные.xlsx",
+                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 @app.get("/api/table")
 def table(mode: str = "daily", ds: str = Common["ds"], station: str | None = Common["station"],
           start: str | None = Common["start"], end: str | None = Common["end"], base: str = Common["base"],
@@ -374,19 +565,26 @@ def table(mode: str = "daily", ds: str = Common["ds"], station: str | None = Com
     """mode=daily — суточная таблица за месяц (по start); иначе — декадная таблица за период."""
     d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
     if mode == "daily":
-        return V.js(T.daily_table(data, daily, pd.Timestamp(start) if start else s))
+        st = station if station in d.raw["station"].unique() else min(d.raw["station"])
+        return V.js(T.daily_table(data, daily, pd.Timestamp(start) if start else s, st))
     return V.js(T.decade_table(daily, s, e))
 
 
 @app.get("/api/table.xlsx")
-def table_xlsx(mode: str = "daily", ds: str = Common["ds"], station: str | None = Common["station"],
+def table_xlsx(mode: str = "daily", var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"],
                start: str | None = Common["start"], end: str | None = Common["end"], base: str = Common["base"],
                clean: bool = Common["clean"], fill: bool = Common["fill"]):
     d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
-    st = station or sorted(d.raw["station"].unique())[0]
-    tab = T.daily_table(data, daily, pd.Timestamp(start) if start else s) if mode == "daily" else T.decade_table(daily, s, e)
+    st = station if station in d.raw["station"].unique() else min(d.raw["station"])
+    tab = (T.daily_table(data, daily, pd.Timestamp(start) if start else s, st)
+           if mode == "daily" else T.decade_table(daily, s, e))
+    if mode == "daily":
+        s = (pd.Timestamp(start) if start else s).to_period("M").to_timestamp()
+        e = s + pd.offsets.MonthEnd(0)
+    monthly = T.monthly_rows(tab, s)
+    review = Q.export_sheets(data, daily, monthly, issues, Q.exclusions_for(d.reports.values(), st), st, var, s, e)
     name = f"{st} {tab['title']}".replace("—", "-").replace(".", "-")
-    return _download(T.to_excel(tab, st), f"Таблица {name}.xlsx",
+    return _download(T.to_excel(tab, st, review), f"Таблица {name}.xlsx",
                      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
@@ -398,22 +596,26 @@ def _download(content: bytes | str, filename: str, media: str) -> Response:
 
 
 @app.get("/api/report.html")
-def report_html(ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
+def report_html(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
                 end: str | None = Common["end"], base: str = Common["base"], clean: bool = Common["clean"],
                 fill: bool = Common["fill"]):
     d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
-    st = station or sorted(d.raw["station"].unique())[0]
-    return _download(html_report(daily, st, s, e, b, issues), f"Метеоотчёт {st} {s:%Y%m%d}-{e:%Y%m%d}.html",
+    st = station if station in d.raw["station"].unique() else min(d.raw["station"])
+    review = Q.export_sheets(data, daily, A.aggregate(daily.loc[s:e], "MS"), issues,
+                             Q.exclusions_for(d.reports.values(), st), st, var, s, e)
+    return _download(html_report(daily, st, s, e, b, issues, review=review), f"Метеоотчёт {st} {s:%Y%m%d}-{e:%Y%m%d}.html",
                      "text/html; charset=utf-8")
 
 
 @app.get("/api/report.xlsx")
-def report_xlsx(ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
+def report_xlsx(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"], start: str | None = Common["start"],
                 end: str | None = Common["end"], base: str = Common["base"], clean: bool = Common["clean"],
                 fill: bool = Common["fill"]):
     d, data, daily, issues, sub, fr, s, e, b = ctx(ds, station, start, end, base, clean, fill)
-    st = station or sorted(d.raw["station"].unique())[0]
-    return _download(to_excel(build_sheets(daily, s, e, b, issues)), f"Метеоданные {st} {s:%Y%m%d}-{e:%Y%m%d}.xlsx",
+    st = station if station in d.raw["station"].unique() else min(d.raw["station"])
+    review = Q.export_sheets(data, daily, A.aggregate(daily.loc[s:e], "MS"), issues,
+                             Q.exclusions_for(d.reports.values(), st), st, var, s, e)
+    return _download(to_excel(build_sheets(daily, s, e, b, issues), review), f"Метеоданные {st} {s:%Y%m%d}-{e:%Y%m%d}.xlsx",
                      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 

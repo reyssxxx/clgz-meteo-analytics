@@ -16,6 +16,7 @@ import pandas as pd
 
 from . import analytics as A
 from . import coverage as CV
+from . import quality as Q
 from .schema import VARIABLES
 
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь",
@@ -28,7 +29,7 @@ COLUMNS = [
     ("t_min", "Температура воздуха, °C", "мин.", "mean"),
     ("rh", "Влажность, %", "средняя", "mean"),
     ("wind_speed", "Ветер", "скорость, м/с", "mean"),
-    ("wind_gust", "Ветер", "порыв, м/с", "max"),
+    ("wind_gust", "Ветер", "средний порыв, м/с", "mean"),
     ("wind_dir", "Ветер", "направление, °", "circmean"),
     ("soil_05", "Температура почвы, °C", "5 см", "mean"),
     ("soil_10", "Температура почвы, °C", "10 см", "mean"),
@@ -67,41 +68,39 @@ def _values(d: pd.DataFrame, cols: list[dict]) -> dict:
     return {c["key"]: _agg(d[c["key"]], c["how"]) for c in cols}
 
 
-def _month_rows(daily: pd.DataFrame, ms: pd.Timestamp, cols: list[dict],
-                start: pd.Timestamp | None = None, end: pd.Timestamp | None = None) -> tuple[list[dict], dict]:
+def _month_rows(daily: pd.DataFrame, ms: pd.Timestamp, cols: list[dict], start=None, end=None) -> tuple[list[dict], dict]:
     """Декады и месяц для одного календарного месяца. Месячное значение — только при валидном месяце
     (для каждого параметра отдельно)."""
     me = ms + pd.offsets.MonthEnd(0)
-    first = max(ms, start) if start is not None else ms
-    last = min(me, end) if end is not None else me
-    d = daily.reindex(pd.date_range(first, last, freq="D"))
+    d = daily.reindex(pd.date_range(ms, me, freq="D"))
+    selected = d.loc[start:end]
     rows = []
     for k in (1, 2, 3):
-        part = d[[decade(x.day) == k for x in d.index]]
+        part = selected[[decade(x.day) == k for x in selected.index]]
         if part.empty:
             continue
         n = {c["key"]: int(part[c["key"]].notna().sum()) for c in cols}
-        label = f"{k}-я декада"
-        if start is not None or end is not None:
-            label += f" ({part.index[0].day}–{part.index[-1].day})"
-        rows.append({"kind": "decade", "label": label, "values": _values(part, cols), "days": n,
-                     "of": len(part)})
+        rows.append({"kind": "decade", "decade": k, "label": f"{k}-я декада", "values": _values(part, cols), "days": n,
+                     "of": len(part), "start_day": part.index[0].day, "end_day": part.index[-1].day})
     month_vals, month_ok = {}, {}
     for c in cols:
         ok = CV.month_window_valid(d[c["key"]].notna())
         month_ok[c["key"]] = ok
-        month_vals[c["key"]] = _agg(d[c["key"]], c["how"]) if ok else np.nan
-    rows.append({"kind": "month", "label": f"{MONTHS[ms.month - 1].capitalize()} {ms.year}", "values": month_vals,
-                 "valid": month_ok, "days": {c["key"]: int(d[c["key"]].notna().sum()) for c in cols}, "of": len(d)})
+        month_vals[c["key"]] = _agg(selected[c["key"]], c["how"]) if ok else np.nan
+    partial = len(selected) != len(d)
+    label = ("За выбранные дни" if partial else f"{MONTHS[ms.month - 1].capitalize()} {ms.year}")
+    rows.append({"kind": "month", "label": label, "partial": partial, "values": month_vals,
+                 "valid": month_ok, "days": {c["key"]: int(selected[c["key"]].notna().sum()) for c in cols},
+                 "of": len(selected)})
     return rows, month_vals
 
 
-def daily_table(raw_station: pd.DataFrame, daily: pd.DataFrame, month_start) -> dict:
+def daily_table(raw_station: pd.DataFrame, daily: pd.DataFrame, month_start, station: str | None = None) -> dict:
     """Суточная таблица за месяц."""
     ms = pd.Timestamp(month_start).to_period("M").to_timestamp()
     me = ms + pd.offsets.MonthEnd(0)
     cols = _cols(daily)
-    rule = CV.day_rule(raw_station.index)
+    rule = CV.day_rule(raw_station.index, station)
     counts = CV.day_counts(raw_station.loc[ms:me + pd.Timedelta("1D") - pd.Timedelta("1ns")].index, rule)
     d = daily.reindex(pd.date_range(ms, me, freq="D"))
     rows = []
@@ -118,10 +117,12 @@ def daily_table(raw_station: pd.DataFrame, daily: pd.DataFrame, month_start) -> 
         ext["t_max"] = {"value": d["t_max"].max(), "date": d["t_max"].idxmax().strftime("%d.%m")}
     if "t_min" in d and d["t_min"].notna().any():
         ext["t_min"] = {"value": d["t_min"].min(), "date": d["t_min"].idxmin().strftime("%d.%m")}
-    if "wind_gust" in d and d["wind_gust"].notna().any():
-        ext["wind_gust"] = {"value": d["wind_gust"].max(), "date": d["wind_gust"].idxmax().strftime("%d.%m")}
+    gust_max = d.get("wind_gust_max", d.get("wind_gust"))
+    if gust_max is not None and gust_max.notna().any():
+        ext["wind_gust"] = {"value": gust_max.max(), "date": gust_max.idxmax().strftime("%d.%m")}
     return {"mode": "daily", "title": f"{MONTHS[ms.month - 1].capitalize()} {ms.year}", "columns": cols,
             "rows": rows, "summary": summary, "extremes": ext, "rule": rule.describe(),
+            "coverage_label": "Часов" if rule.mode == "hours" else "Сроков",
             "complete_days": int(sum(r["complete"] for r in rows)), "days": len(rows),
             "has_data": bool(len(dd))}
 
@@ -153,9 +154,19 @@ def decade_table(daily: pd.DataFrame, start, end) -> dict:
                       "valid_months": n_valid, "months": len(months)}}
 
 
+def monthly_rows(tab: dict, start) -> pd.DataFrame:
+    """Месячные значения ровно в том виде, в каком они показаны в таблице."""
+    if tab["mode"] == "daily":
+        start_month = pd.Timestamp(start).to_period("M").to_timestamp()
+        rows = {start_month: tab["summary"][-1]["values"]}
+    else:
+        rows = {pd.Timestamp(block["month"]): block["rows"][-1]["values"] for block in tab["blocks"]}
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
 # ------------------------------------------------------------------ Excel в том же виде
 
-def to_excel(tab: dict, station: str) -> bytes:
+def to_excel(tab: dict, station: str, review=None) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
@@ -175,7 +186,9 @@ def to_excel(tab: dict, station: str) -> bytes:
     ws["A2"].font = grey
     ws.append([])
     # двухуровневая шапка
-    first = ["Дата" if tab["mode"] == "daily" else "Период"] + [c["group"] for c in cols] + (["Сроков"] if tab["mode"] == "daily" else [])
+    first = ["Дата" if tab["mode"] == "daily" else "Период"] + [c["group"] for c in cols]
+    if tab["mode"] == "daily":
+        first.append(tab["coverage_label"])
     second = [""] + [c["label"] for c in cols] + ([""] if tab["mode"] == "daily" else [])
     ws.append(first)
     ws.append(second)
@@ -211,8 +224,6 @@ def to_excel(tab: dict, station: str) -> bytes:
     if tab["mode"] == "daily":
         for row in tab["rows"]:
             put(row["label"], row["values"], extra=f"{row['obs']} из {row['of_obs']}", greyed=not row["complete"])
-            if row["date"][-2:] in ("10", "20") or row is tab["rows"][-1]:
-                pass
         for s in tab["summary"]:
             put(s["label"] if s["kind"] == "decade" else f"Среднее за месяц", s["values"],
                 fill_month if s["kind"] == "month" else fill_dec, extra="")
@@ -222,7 +233,12 @@ def to_excel(tab: dict, station: str) -> bytes:
     else:
         for b in tab["blocks"]:
             for s in b["rows"]:
-                put(f"{b['label']}, {s['label']}" if s["kind"] == "decade" else b["label"], s["values"],
+                label = b["label"]
+                if s["kind"] == "decade":
+                    label = f"{label}, {s['label']} ({s['start_day']}–{s['end_day']})"
+                elif s["partial"]:
+                    label = f"{label}, {s['label'].lower()}"
+                put(label, s["values"],
                     fill_month if s["kind"] == "month" else None)
         put(tab["total"]["label"], tab["total"]["values"], fill_month)
     ws.column_dimensions["A"].width = 26
@@ -230,6 +246,8 @@ def to_excel(tab: dict, station: str) -> bytes:
         ws.column_dimensions[get_column_letter(i)].width = 13
     ws.row_dimensions[5].height = 30
     ws.freeze_panes = "B6"
+    if review:
+        Q.write_review_sheets(wb, review)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

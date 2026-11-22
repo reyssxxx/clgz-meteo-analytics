@@ -20,6 +20,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .schema import STATION_PREFIXES
+
 MAX_INVALID_DAYS = 10
 MAX_INVALID_RUN = 4          # 5 подряд — уже нельзя
 
@@ -42,7 +44,11 @@ def infer_step(index: pd.DatetimeIndex) -> pd.Timedelta:
     return pd.Series(idx).diff().median()
 
 
-def day_rule(index: pd.DatetimeIndex) -> DayRule:
+def day_rule(index: pd.DatetimeIndex, station: str | None = None) -> DayRule:
+    if station == STATION_PREFIXES["ame60"]:
+        return DayRule("slots", 72, 96)
+    if station in (STATION_PREFIXES["kr1"], STATION_PREFIXES["kr2"]):
+        return DayRule("hours", 18, 24)
     step = infer_step(index)
     if pd.Timedelta("30min") <= step <= pd.Timedelta("60min"):
         return DayRule("hours", 18, 24)
@@ -107,8 +113,11 @@ def coverage_table(df: pd.DataFrame) -> pd.DataFrame:
     """Покрытие станции по месяцам, как в coverage_by_month.csv: число полных дней и валидность месяца.
     Считается по записанным срокам станции (без конфликтных строк), независимо от параметров."""
     idx = df.index
-    rule = day_rule(idx)
+    names = df["station"].unique() if "station" in df else []
+    rule = day_rule(idx, names[0] if len(names) == 1 else None)
     ok = valid_days(idx, rule)
+    if ok.empty:
+        return pd.DataFrame(columns=["year", "month", "days_in_month", "valid_days", "month_valid"])
     mv = month_valid(ok)
     start, end = ok.index.min(), ok.index.max()
     years = range(start.year, end.year + 1)

@@ -374,3 +374,14 @@ table.dt tbody tr.mh td.first { position: sticky; left: 0; }
 .option-panel button[aria-selected=true] { background: var(--accent); color: white; }
 .option-panel button:disabled { opacity: .4; }
 .option-panel button[hidden] { display: none; }
+
+.recovery-actions { padding: 8px 16px 0; }
+.recovery-result:empty { display: none; }
+.recovery-result p { margin: 6px 0 10px; }
+.recovery-result .tablewrap { margin: 8px 0; }
+.recovery-form { display: grid; gap: 8px; margin: 10px 0 4px; }
+.recovery-form label { display: grid; gap: 4px; }
+.recovery-form input, .recovery-form select { width: 100%; }
+.recovery-form button { justify-self: start; }
+.recovery-form textarea { width: 100%; resize: vertical; }
+.recovery-form[hidden] { display: none; }
