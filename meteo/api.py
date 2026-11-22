@@ -360,8 +360,10 @@ def overview(var: str = "t_air", ds: str = Common["ds"], station: str | None = C
         if not have:
             raise HTTPException(400, "Нет ни одного параметра с полными сутками.")
         var = "t_air" if "t_air" in have else have[0]
+    parameter_issues = issues[issues["Параметр"] == Q.observation_var(data, var)]
     return {"base": b, "years": V.years_chart(daily, var, s, e, b), "heatmap": V.anomaly_heatmap(daily, var, s, e, b),
-            "ranking": V.ranking(daily, var, s, e, b), "facts": V.facts(daily, var, s, e, b, issues)}
+            "ranking": V.ranking(daily, var, s, e, b), "facts": V.facts(daily, var, s, e, b, issues),
+            "anomalies": V.anomaly_explanations(daily, var, s, e, b, parameter_issues)}
 
 
 @app.get("/api/series")

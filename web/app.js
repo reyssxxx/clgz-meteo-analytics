@@ -374,6 +374,7 @@ async function renderOverview(main) {
       <div class="cbar">${o.heatmap.inverted ? 'суше' : 'холоднее'} <i class="${o.heatmap.inverted ? 'inv' : ''}"></i> ${o.heatmap.inverted ? 'влажнее' : 'теплее'}</div>
     </div>
   </div>
+  ${anomalyExplanationsHtml(o.anomalies, o.base)}
   <div class="grid21 mt">
     <div class="box panel" id="rank-panel">
       <div class="head"><b>${esc(rankTitle())}</b><span>${esc(v.label.toLowerCase())}${o.ranking.category ? `, ${o.ranking.category.rank}-е место из ${o.ranking.category.n}` : ''}</span>
@@ -488,6 +489,34 @@ function drawRank(r) {
   });
 }
 function rankRange(vals) { const f = vals.filter(x => x !== null); const lo = Math.min(...f), hi = Math.max(...f), p = (hi - lo) * .15 || 1; return [lo - p, hi + p]; }
+
+function anomalyExplanationsHtml(a, base) {
+  const month = a.scale === 'month';
+  const comparison = month ? 'тем же месяцам' : 'тем же календарным датам';
+  const unit = esc(a.var.unit);
+  const number = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 4 });
+  const signed = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 4, signDisplay: 'exceptZero' });
+  const details = a.items.map(x => {
+    const date = parseISO(x.date);
+    const title = month ? `${cap(MONTHS[date.getMonth()])} ${date.getFullYear()}` : ruDate(x.date);
+    const qualityCount = `${x.quality_count} ${plural(x.quality_count, ['замечание', 'замечания', 'замечаний'])}`;
+    return `<li>
+      <h3>${esc(title)}</h3>
+      <p>Отклонение <strong>${signed.format(x.difference)} ${unit}</strong>. Значение ${number.format(x.value)} ${unit},
+        среднее ${number.format(x.mean)} ${unit} по архиву станции (${yearsLabel(x.years)}).</p>
+      ${x.quality_note ? `<p class="anomaly-quality"><strong>Качество данных (${qualityCount})</strong><br>
+        ${esc(x.quality_note)}. ${esc(x.quality_context)}</p>` : ''}
+    </li>`;
+  }).join('');
+  let description = `Наибольшие отклонения по величине от среднего по ${comparison} в базе ${base.join('–')}.`;
+  if (!a.has_comparison) description = `Для сравнения нужно минимум ${yearsLabel(a.min_years)} с данными за те же календарные даты.`;
+  else if (!details) description = 'У сопоставимых значений в выбранном периоде отклонений от среднего не выявлено.';
+  return `<section class="box mt anomaly-explanations" aria-labelledby="anomaly-heading">
+    <h2 id="anomaly-heading">Почему выделены аномалии</h2>
+    <p>${esc(a.var.label)}. ${esc(description)}</p>
+    ${details ? `<ul>${details}</ul>` : ''}
+  </section>`;
+}
 
 function factsHtml(f, label) {
   const tone = t => ({ warm: 'warm', cold: 'cold', dry: 'dry', wet: 'wet' }[t] || '');

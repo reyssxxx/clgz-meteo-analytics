@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from meteo import analytics as A
+from meteo import quality as Q
 from meteo import views as V
 from meteo.loader import load
 
@@ -41,6 +42,45 @@ def test_overview_parts(demo, var, period):
     strict(V.ranking(d, var, s, e, BASE))
     f = strict(V.facts(d, var, s, e, BASE))
     assert f["facts"] and f["insights"]
+
+
+def test_anomaly_explanations_use_complete_calendar_months_and_local_quality_notes():
+    dates = pd.date_range("2019-01-01", "2022-04-30")
+    daily = pd.DataFrame({"t_air": 5.0}, index=dates)
+    daily.loc["2022-01", "t_air"] = 99
+    daily.loc["2022-02", "t_air"] = 8
+    daily.loc["2022-03", "t_air"] = -2
+    daily.loc["2022-04-01":"2022-04-05", "t_air"] = float("nan")
+    issues = pd.DataFrame([
+        (pd.Timestamp("2022-02-28 22:00"), pd.Timestamp("2022-03-01 09:00"), "t_air", -2,
+         "Повторяющиеся значения", Q.IMPORTANT, "Одинаковые показания несколько часов.", 12),
+        (pd.Timestamp("2022-02-10"), pd.Timestamp("2022-02-10"), "t_air", 16,
+         "Потепление", Q.WEATHER, "Изменилась погода.", 1),
+    ], columns=Q.ISSUE_COLUMNS)
+
+    result = strict(V.anomaly_explanations(daily, "t_air", "2022-01-02", "2022-04-30", ("2019", "2021"), issues))
+
+    assert result["scale"] == "month"
+    march, february = result["items"]
+    assert march == {"date": "2022-03-01", "value": -2, "mean": 5, "years": 3, "difference": -7,
+                     "quality_count": 1, "quality_note": "Повторяющиеся значения",
+                     "quality_context": "Одинаковые показания несколько часов."}
+    assert february["date"] == "2022-02-01" and february["difference"] == 3
+    assert february["quality_count"] == 1
+
+
+def test_anomaly_explanations_use_daily_comparisons_for_short_periods():
+    dates = pd.date_range("2019-02-01", "2022-03-02")
+    daily = pd.DataFrame({"wind_dir": 350.0}, index=dates)
+    daily.loc["2022-03-01", "wind_dir"] = 10
+    issues = pd.DataFrame(columns=Q.ISSUE_COLUMNS)
+
+    result = strict(V.anomaly_explanations(daily, "wind_dir", "2022-02-28", "2022-03-02", ("2019", "2021"), issues))
+    assert result["scale"] == "day" and result["has_comparison"]
+    assert [(x["date"], x["difference"], x["years"]) for x in result["items"]] == [("2022-03-01", 20, 3)]
+
+    result = strict(V.anomaly_explanations(daily, "wind_dir", "2022-02-28", "2022-03-02", ("2020", "2021"), issues))
+    assert not result["has_comparison"] and not result["items"]
 
 
 def test_category_scale():

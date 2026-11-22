@@ -12,6 +12,7 @@ import pandas as pd
 
 from . import analytics as A
 from . import insights as I
+from . import quality as Q
 from .schema import STATION_PREFIXES, VARIABLES, label
 
 # категории — по месту среди тех же периодов всех лет станции (не «климатическая норма»)
@@ -167,6 +168,38 @@ def anomaly_heatmap(daily: pd.DataFrame, var: str, start, end, base) -> dict:
     lim = float(np.nanpercentile(np.abs(t.to_numpy()), 97)) if t.notna().any().any() else 1.0
     return js({"years": t.index, "z": t.to_numpy(), "base_years": years, "selected": sel, "limit": max(lim, 0.5),
                "unit": "% к среднему" if is_sum else VARIABLES[var].unit, "var": var_meta(var), "inverted": is_sum or var in ("rh",)})
+
+
+def anomaly_explanations(daily: pd.DataFrame, var: str, start, end, base, issues: pd.DataFrame) -> dict:
+    """Наибольшие отклонения от средних той же станции за те же календарные периоды."""
+    min_years = 3
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    monthly = A.monthly_anomalies(daily, var, base).loc[start:end]
+    monthly = monthly.loc[monthly.index + pd.offsets.MonthEnd(0) <= end]
+    candidates = monthly.dropna(subset=["anomaly"]).loc[lambda rows: rows["years"] >= min_years]
+    by_month = not candidates.empty
+    if not by_month:
+        days = A.daily_anomalies(daily, var, base).loc[start:end]
+        candidates = days.dropna(subset=["anomaly"]).loc[lambda rows: rows["years"] >= min_years]
+
+    magnitude = candidates["anomaly"].abs()
+    # JSON округляет значения до четырёх знаков.
+    top = magnitude[magnitude.round(4) > 0].nlargest(3).index
+    quality = Q.period_records(issues, start, end)
+    quality = quality[quality["Приоритет"].isin((Q.IMPORTANT, Q.REVIEW))]
+    entries = []
+    for day, row in candidates.loc[top].iterrows():
+        last = day + pd.offsets.MonthEnd(0) if by_month else day
+        notes = Q.period_records(quality, day, last)
+        important = notes[notes["Приоритет"] == Q.IMPORTANT]
+        relevant = important if not important.empty else notes
+        note = relevant.iloc[0] if not relevant.empty else None
+        entries.append({"date": day, "value": row["value"], "mean": row["norm"], "years": int(row["years"]),
+                        "difference": row["anomaly"], "quality_count": len(notes),
+                        "quality_note": note["Проблема"] if note is not None else None,
+                        "quality_context": note["Контекст"] if note is not None else None})
+    return js({"items": entries, "scale": "month" if by_month else "day", "min_years": min_years,
+               "has_comparison": not candidates.empty, "var": var_meta(var)})
 
 
 def ranking(daily: pd.DataFrame, var: str, start, end, base) -> dict:
