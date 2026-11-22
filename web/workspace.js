@@ -27,9 +27,8 @@ if (location.pathname === '/' && previousPages.has(location.hash.slice(1).split(
 const navigation = document.querySelector('#sections');
 const detail = document.querySelector('#detail');
 const launcher = document.querySelector('#launcher');
-const dialog = document.querySelector('#program-dialog');
-const form = document.querySelector('#program-form');
-const formError = document.querySelector('#program-error');
+const launcherTitle = launcher.querySelector('h1');
+const listError = document.querySelector('#program-list-error');
 const storageKey = 'clgz.launcher.programs';
 
 function element(tag, text, className) {
@@ -45,12 +44,12 @@ function link(text, url, className) {
   return node;
 }
 
-function programUrl(input) {
+function isProgramUrl(input) {
   try {
     const url = new URL(input);
-    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -58,7 +57,7 @@ function savedPrograms() {
   try {
     const entries = JSON.parse(localStorage.getItem(storageKey) || '[]');
     return Array.isArray(entries)
-      ? entries.filter(entry => typeof entry?.title === 'string' && programUrl(entry.url))
+      ? entries.filter(entry => typeof entry?.title === 'string' && isProgramUrl(entry.url))
       : [];
   } catch {
     return [];
@@ -75,43 +74,27 @@ function renderPrograms() {
   }
   for (const entry of savedPrograms()) {
     const row = element('div', '', 'program-row');
-    row.append(link(entry.title, entry.url, 'program-link'));
+    const remove = element('button', 'Удалить', 'remove-program');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', 'Удалить «' + entry.title + '»');
+    remove.addEventListener('click', () => {
+      try {
+        const remaining = savedPrograms().filter(program => program.url !== entry.url);
+        localStorage.setItem(storageKey, JSON.stringify(remaining));
+      } catch {
+        listError.textContent = 'Браузер не разрешил удалить программу.';
+        listError.hidden = false;
+        return;
+      }
+      listError.hidden = true;
+      const neighbor = row.nextElementSibling || row.previousElementSibling;
+      row.remove();
+      (neighbor?.querySelector('.remove-program') || launcherTitle).focus();
+    });
+    row.append(link(entry.title, entry.url, 'program-link'), remove);
     navigation.append(row);
   }
 }
-
-document.querySelector('#add-program').addEventListener('click', () => {
-  form.reset();
-  formError.hidden = true;
-  dialog.showModal();
-});
-document.querySelector('#cancel-program').addEventListener('click', () => dialog.close());
-form.addEventListener('submit', event => {
-  event.preventDefault();
-  const values = new FormData(form);
-  const title = values.get('title').trim();
-  const url = programUrl(values.get('url').trim());
-  const entries = savedPrograms();
-  let error = '';
-  if (!title || !url) {
-    error = 'Введите название и ссылку с http:// или https://.';
-  } else if (entries.some(entry => entry.url === url) ||
-    sections.some(section => section.action && new URL(section.action.url, location.origin).href === url)) {
-    error = 'Эта программа уже в списке.';
-  } else {
-    try {
-      localStorage.setItem(storageKey, JSON.stringify([...entries, { title, url }]));
-      renderPrograms();
-      dialog.close();
-      navigation.lastElementChild.querySelector('a').focus();
-      return;
-    } catch {
-      error = 'Браузер не разрешил сохранить программу.';
-    }
-  }
-  formError.textContent = error;
-  formError.hidden = false;
-});
 
 window.addEventListener('storage', event => {
   if (event.key === storageKey || event.key === null) renderPrograms();
@@ -165,7 +148,7 @@ function renderPage(moveFocus = false) {
   detail.hidden = !section;
   detail.replaceChildren();
   if (!section) {
-    if (moveFocus) launcher.querySelector('h1').focus();
+    if (moveFocus) launcherTitle.focus();
     return;
   }
   const title = element('h1', section.title);

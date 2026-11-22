@@ -51,8 +51,22 @@ a { color: var(--accent); }
 .program-link { flex: 1; min-width: 0; color: var(--ink); font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
 .program-link { border-radius: 11px; }
 .program-link:hover { background: var(--accent-soft); }
-.add-program { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 12px; background: var(--accent); color: white; font-size: 29px; line-height: 1; }
-.add-program:hover, .button:hover { background-color: var(--accent-2); }
+.remove-program {
+  align-self: center;
+  flex: none;
+  min-height: 44px;
+  margin-inline-end: 5px;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #a2222c;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.remove-program:hover { background: #fae9eb; }
+.button:hover { background-color: var(--accent-2); }
 .button { display: inline-block; padding: 8px 14px; border: 1px solid transparent; border-radius: 8px; background: var(--accent); color: white; text-decoration: none; font-weight: 600; }
 .button.secondary { background: white; border-color: var(--line); color: var(--ink); }
 .button.secondary:hover { background: var(--accent-soft); }
@@ -61,14 +75,8 @@ a { color: var(--accent); }
 .detail > p { color: var(--ink-2); margin-bottom: 20px; }
 .detail .notice, .downloads { border-top: 1px solid var(--line); margin-top: 26px; padding-top: 16px; }
 .downloads label { display: block; margin-top: 15px; font-weight: 600; }
-.downloads select, .program-dialog input { font: inherit; color: inherit; background: white; border: 1px solid var(--line); padding: 6px 9px; border-radius: 6px; }
+.downloads select { font: inherit; color: inherit; background: white; border: 1px solid var(--line); padding: 6px 9px; border-radius: 6px; }
 .files { display: flex; gap: 10px 20px; flex-wrap: wrap; padding-left: 0; list-style: none; }
-.program-dialog { width: min(430px, calc(100% - 32px)); border: 1px solid var(--line); border-radius: 16px; padding: 22px; color: var(--ink); background: var(--panel); }
-.program-dialog::backdrop { background: #1e242168; }
-.program-dialog h2, .program-dialog p { margin: 0 0 12px; }
-.program-dialog label { display: grid; gap: 4px; margin: 12px 0; font-weight: 600; }
-.program-actions { display: flex; justify-content: flex-end; gap: 8px; }
-#program-error { color: #a2222c; }
 @media (max-width: 460px) {
   .topbar-inner { padding-inline: 16px; }
   .identity { font-size: 16px; }
