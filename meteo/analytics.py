@@ -757,5 +757,7 @@ def pair_compare(raw_a, daily_a, raw_b, daily_b, var: str, start, end) -> dict:
     ca = diurnal(raw_a, daily_a, var, start, end, common)
     cb = diurnal(raw_b, daily_b, var, start, end, common)
     dd = (da.reindex(common) - db.reindex(common))
-    return {"months": months, "diurnal_a": ca, "diurnal_b": cb, "common_days": len(common),
+    days = pd.DataFrame({"a": da, "b": db}).reindex(pd.date_range(start, end, freq="D"))
+    days["diff"] = days["a"] - days["b"]
+    return {"days": days, "months": months, "diurnal_a": ca, "diurnal_b": cb, "common_days": len(common),
             "mean_diff": dd.mean() if len(dd) else np.nan, "days_a_warmer": int((dd > 0).sum())}

@@ -23,7 +23,6 @@
     <a data-page="forecast">Прогноз</a>
     <a data-page="data">Данные и отчёты</a>
   </nav>
-  <div class="latest" id="latest"><span>Данные</span><b>…</b></div>
 </header>
 
 <section class="controls" id="controls">
@@ -58,9 +57,11 @@
       </button>
       <div class="box popover picker" id="picker" hidden role="dialog" aria-label="Выбор периода"></div>
     </div>
-    <div class="box range" id="custom">
-      <span class="t">Свой период</span>
-      <span class="dates"><input type="date" id="c-start"><span>—</span><input type="date" id="c-end"></span>
+    <div id="custom">
+      <button type="button" class="box range-trigger" id="range-trigger" aria-haspopup="dialog" aria-expanded="false">
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>
+        <span id="range-label"></span><span aria-hidden="true">⌄</span>
+      </button>
     </div>
   </div>
   <label class="box selector wide" data-ctl="scope">
@@ -69,14 +70,27 @@
     </span>
     <span class="txt"><span class="t">Ряд для тренда</span><select id="scope"></select></span>
   </label>
-  <div class="box range" data-ctl="cmp">
-    <span class="t"><i class="dot a"></i>Период A</span>
-    <span class="dates"><input type="date" id="a0"><span>—</span><input type="date" id="a1"></span>
-  </div>
-  <div class="box range" data-ctl="cmp">
-    <span class="t"><i class="dot b"></i>Период B</span>
-    <span class="dates"><input type="date" id="b0"><span>—</span><input type="date" id="b1"></span>
-  </div>
+  <button type="button" class="box range-trigger" data-ctl="cmp" data-range-pair="a" aria-haspopup="dialog" aria-expanded="false">
+    <strong>Период A</strong><span></span><span aria-hidden="true">⌄</span>
+  </button>
+  <button type="button" class="box range-trigger" data-ctl="cmp" data-range-pair="b" aria-haspopup="dialog" aria-expanded="false">
+    <strong>Период B</strong><span></span><span aria-hidden="true">⌄</span>
+  </button>
+      <dialog class="box range-dialog" id="range-dialog" aria-labelledby="range-title">
+        <form id="range-form">
+          <h2 id="range-title">Выбор периода</h2>
+          <div class="range-inputs">
+            <label>С <input id="c-start" placeholder="ДД.ММ.ГГГГ" maxlength="10" aria-describedby="range-message"></label>
+            <label>По <input id="c-end" placeholder="ДД.ММ.ГГГГ" maxlength="10" aria-describedby="range-message"></label>
+          </div>
+          <div class="range-calendars" id="range-calendars"></div>
+          <p id="range-message" role="status"></p>
+          <div class="range-actions">
+            <button type="button" class="btn" id="range-cancel">Отмена</button>
+            <button type="submit" class="btn range-apply" id="range-apply">Применить</button>
+          </div>
+        </form>
+      </dialog>
   <div class="settings" data-ctl="settings">
     <button class="box gear" id="settings-btn" aria-expanded="false" aria-label="Настройки" title="Настройки расчёта">
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>

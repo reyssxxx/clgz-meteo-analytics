@@ -389,6 +389,7 @@ def pair(raw_a, daily_a, raw_b, daily_b, name_a: str, name_b: str, var: str, sta
     return js({"a": name_a, "b": name_b, "var": var_meta(var), "common_days": r["common_days"],
                "suspicious": suspicious,
                "mean_diff": r["mean_diff"], "days_a_higher": r["days_a_warmer"],
+               "days": {"x": r["days"].index, "a": r["days"]["a"], "b": r["days"]["b"], "diff": r["days"]["diff"]},
                "months": {"x": m.index, "a": m["a"], "b": m["b"], "diff": m["diff"]},
                "diurnal": {"hours": list(range(24)), "a": r["diurnal_a"]["value"], "b": r["diurnal_b"]["value"],
                            "n": r["diurnal_a"]["n"]}})

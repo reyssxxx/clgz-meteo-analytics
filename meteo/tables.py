@@ -67,20 +67,28 @@ def _values(d: pd.DataFrame, cols: list[dict]) -> dict:
     return {c["key"]: _agg(d[c["key"]], c["how"]) for c in cols}
 
 
-def _month_rows(daily: pd.DataFrame, ms: pd.Timestamp, cols: list[dict]) -> tuple[list[dict], dict]:
+def _month_rows(daily: pd.DataFrame, ms: pd.Timestamp, cols: list[dict],
+                start: pd.Timestamp | None = None, end: pd.Timestamp | None = None) -> tuple[list[dict], dict]:
     """Декады и месяц для одного календарного месяца. Месячное значение — только при валидном месяце
     (для каждого параметра отдельно)."""
     me = ms + pd.offsets.MonthEnd(0)
-    d = daily.reindex(pd.date_range(ms, me, freq="D"))
+    first = max(ms, start) if start is not None else ms
+    last = min(me, end) if end is not None else me
+    d = daily.reindex(pd.date_range(first, last, freq="D"))
     rows = []
     for k in (1, 2, 3):
         part = d[[decade(x.day) == k for x in d.index]]
+        if part.empty:
+            continue
         n = {c["key"]: int(part[c["key"]].notna().sum()) for c in cols}
-        rows.append({"kind": "decade", "label": f"{k}-я декада", "values": _values(part, cols), "days": n,
+        label = f"{k}-я декада"
+        if start is not None or end is not None:
+            label += f" ({part.index[0].day}–{part.index[-1].day})"
+        rows.append({"kind": "decade", "label": label, "values": _values(part, cols), "days": n,
                      "of": len(part)})
     month_vals, month_ok = {}, {}
     for c in cols:
-        ok = bool(CV.monthly_valid_from_daily(d[c["key"]]).iloc[0])
+        ok = CV.month_window_valid(d[c["key"]].notna())
         month_ok[c["key"]] = ok
         month_vals[c["key"]] = _agg(d[c["key"]], c["how"]) if ok else np.nan
     rows.append({"kind": "month", "label": f"{MONTHS[ms.month - 1].capitalize()} {ms.year}", "values": month_vals,
@@ -125,22 +133,23 @@ def decade_table(daily: pd.DataFrame, start, end) -> dict:
     months = pd.date_range(start.to_period("M").to_timestamp(), end, freq="MS")
     blocks, monthly = [], {}
     for ms in months:
-        rows, mv = _month_rows(daily, ms, cols)
+        rows, mv = _month_rows(daily, ms, cols, start, end)
         blocks.append({"month": ms.strftime("%Y-%m"), "label": f"{MONTHS[ms.month - 1].capitalize()} {ms.year}",
                        "rows": rows})
         monthly[ms] = mv
     mdf = pd.DataFrame(monthly).T if monthly else pd.DataFrame()
     total = {}
+    calendar_year = start.year == end.year and (start.month, start.day, end.month, end.day) == (1, 1, 12, 31)
     for c in cols:
         s = mdf[c["key"]] if c["key"] in mdf else pd.Series(dtype=float)
         # итог — по валидным месяцам; для полного года — только если валидны все 12
-        if len(months) == 12 and s.notna().sum() < 12:
+        if calendar_year and s.notna().sum() < 12:
             total[c["key"]] = np.nan
         else:
             total[c["key"]] = _agg(s, c["how"] if c["how"] != "mean" else "mean")
     n_valid = {c["key"]: int(mdf[c["key"]].notna().sum()) if c["key"] in mdf else 0 for c in cols}
     return {"mode": "decades", "title": f"{start:%d.%m.%Y} — {end:%d.%m.%Y}", "columns": cols, "blocks": blocks,
-            "total": {"label": "Год" if len(months) == 12 and start.month == 1 else "Период", "values": total,
+            "total": {"label": "Год" if calendar_year else "Период", "values": total,
                       "valid_months": n_valid, "months": len(months)}}
 
 

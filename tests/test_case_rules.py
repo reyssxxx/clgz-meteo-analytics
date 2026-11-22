@@ -105,6 +105,22 @@ def test_tables_daily_and_decades(raw):
     assert T.to_excel(t2, "АМЕ-60")[:2] == b"PK"
 
 
+def test_decade_table_respects_partial_month_boundaries():
+    from meteo import tables as T
+
+    daily = pd.DataFrame({"t_air": 99.0}, index=pd.date_range("2020-07-01", "2020-08-31"))
+    daily.loc["2020-07-15":"2020-08-10", "t_air"] = 5
+    table = T.decade_table(daily, "2020-07-15", "2020-08-10")
+    july, august = (block["rows"] for block in table["blocks"])
+    assert [row["of"] for row in july] == [6, 11, 17]
+    assert [row["of"] for row in august] == [10, 10]
+    assert table["total"]["values"]["t_air"] == 5
+
+    daily.loc["2020-07-15":"2020-08-10", "t_air"] = np.nan
+    gap = T.decade_table(daily, "2020-07-15", "2020-08-10")
+    assert np.isnan(gap["total"]["values"]["t_air"])
+
+
 def test_polyana_vs_pole_2025_and_pressure_alert(raw):
     from meteo import views as V
     ra, rb = A.for_station(raw, "Кр1 (поляна)"), A.for_station(raw, "Кр2 (поле)")

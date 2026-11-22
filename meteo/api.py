@@ -321,6 +321,10 @@ def pair(var: str = "t_air", a: str | None = None, b: str | None = None, ds: str
     s = pd.Timestamp(start) if start else max(da.index.min(), db.index.min())
     e = pd.Timestamp(end) if end else min(da.index.max(), db.index.max())
     out = V.pair(ra, da, rb, db, a, b, var, s, e)
+    if not out["common_days"] and var in da and var in db:
+        common = da[var].dropna().index.intersection(db[var].dropna().index)
+        if len(common):
+            out["latest_common_day"] = common.max().strftime("%Y-%m-%d")
     out["stations"] = names
     return out
 

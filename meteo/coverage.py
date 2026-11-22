@@ -88,9 +88,14 @@ def month_valid(day_ok: pd.Series) -> pd.Series:
     full = day_ok.reindex(pd.date_range(start, end, freq="D"), fill_value=False)
     res = {}
     for m, g in full.groupby(full.index.to_period("M")):
-        bad = ~g.to_numpy()
-        res[m.to_timestamp()] = bool(bad.sum() <= MAX_INVALID_DAYS and _max_run(bad) <= MAX_INVALID_RUN)
+        res[m.to_timestamp()] = month_window_valid(g)
     return pd.Series(res, dtype=bool)
+
+
+def month_window_valid(day_ok: pd.Series) -> bool:
+    """Проверка календарных дней месяца, включённых в расчёт."""
+    bad = ~day_ok.to_numpy()
+    return bool(day_ok.any() and bad.sum() <= MAX_INVALID_DAYS and _max_run(bad) <= MAX_INVALID_RUN)
 
 
 def monthly_valid_from_daily(daily_values: pd.Series) -> pd.Series:

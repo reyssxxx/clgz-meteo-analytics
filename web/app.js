@@ -36,6 +36,8 @@ function fmt(x, d = 1, sign = false) {
 const pad = n => String(n).padStart(2, '0');
 const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const parseISO = s => { const [y, m, d] = s.slice(0, 10).split('-').map(Number); return new Date(y, m - 1, d); };
+const validISO = s => /^\d{4}-\d{2}-\d{2}$/.test(s) && iso(parseISO(s)) === s;
+const shortDate = s => s.split('-').reverse().join('.');
 const ruDate = (s, year = true) => { const d = parseISO(s); return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}${year ? ' ' + d.getFullYear() : ''}`; };
 function plural(n, forms) { n = Math.abs(n) % 100; const n1 = n % 10;
   return n > 10 && n < 20 ? forms[2] : n1 > 1 && n1 < 5 ? forms[1] : n1 === 1 ? forms[0] : forms[2]; }
@@ -105,10 +107,14 @@ function latestPeriod(kind) {
 }
 function ensurePeriod() {
   if (S.kind === 'custom') {
-    const [lo, hi] = dataRange();
-    if (!S.cs || !S.ce) { S.cs = iso(new Date(hi.getFullYear(), 0, 1)); S.ce = iso(hi); }
-    if (parseISO(S.cs) < lo) S.cs = iso(lo);
-    if (parseISO(S.ce) > hi) S.ce = iso(hi);
+    const [lo, hi] = dataRange().map(iso);
+    if (!validISO(S.cs) || !validISO(S.ce) || S.cs > S.ce || S.ce < lo || S.cs > hi) {
+      S.cs = lo > `${hi.slice(0, 4)}-01-01` ? lo : `${hi.slice(0, 4)}-01-01`;
+      S.ce = hi;
+    } else {
+      if (S.cs < lo) S.cs = lo;
+      if (S.ce > hi) S.ce = hi;
+    }
     return;
   }
   if (!S.y || !fits(S.kind, S.y, S.i)) Object.assign(S, latestPeriod(S.kind));
@@ -156,16 +162,19 @@ const CFG = { displayModeBar: false, responsive: true, locale: 'ru' };
 function plot(id, data, layout) {
   const el = document.getElementById(id);
   if (!el) return null;
-  Plotly.react(el, data, lay(layout), CFG);
+  const ready = Plotly.react(el, data, lay(layout), CFG);
   el._baseAnn = (layout && layout.annotations) || [];
   el._baseShapes = (layout && layout.shapes) || [];
-  freezeAxes(el);
+  el._plotReady = Promise.resolve(ready).then(() => {
+    if (el.isConnected) freezeAxes(el);
+  });
   return el;
 }
 /* Закрепляет диапазоны осей после первой отрисовки. Иначе Plotly при наведении расширяет оси,
    чтобы вместить плашку и маркер у края, — график «растягивается» и скачет под курсором. */
 function freezeAxes(el) {
   const fl = el._fullLayout, upd = {};
+  if (!fl) return;
   for (const k of Object.keys(fl)) {
     if (/^[xy]axis\d*$/.test(k) && fl[k].range) {
       upd[`${k}.range`] = fl[k].range.slice();
@@ -486,10 +495,10 @@ async function renderTables(main) {
   const mode = S.kind === 'month' ? 'daily' : 'decades';
   const t = await api('/api/table', { mode });
   const cols = t.columns;
-  const cell = (c, v) => {
+  const cell = (c, v, title = '') => {
     if (v === null || v === undefined) return '<td class="num na">—</td>';
-    if (c.key === 'wind_dir') return `<td class="num" title="${fmt(v, 0)}°">${RUMB[Math.round(((v % 360) + 360) % 360 / 22.5) % 16]}</td>`;
-    return `<td class="num">${fmt(v, 1)}</td>`;
+    if (c.key === 'wind_dir') return `<td class="num" title="${fmt(v, 0)}°${title ? ` · ${esc(title)}` : ''}">${RUMB[Math.round(((v % 360) + 360) % 360 / 22.5) % 16]}</td>`;
+    return `<td class="num"${title ? ` title="${esc(title)}"` : ''}>${fmt(v, 1)}</td>`;
   };
   const groups = [];
   for (const c of cols) { const g = groups[groups.length - 1]; if (g && g.name === c.group) g.n++; else groups.push({ name: c.group, n: 1 }); }
@@ -534,16 +543,16 @@ async function renderTables(main) {
         <span aria-hidden="true">${expanded ? '▾' : '▸'}</span>${esc(b.label)}</button>`;
       body += sumRow(monthSummary(b), 'mon', b.label, monthButton);
       if (!expanded) continue;
-      const lastDay = new Date(Number(b.month.slice(0, 4)), Number(b.month.slice(5, 7)), 0).getDate();
-      const ranges = ['1–10', '11–20', `21–${lastDay}`];
-      b.rows.filter(r => r.kind === 'decade').forEach((r, k) => {
-        body += sumRow(r, 'decr', `${k + 1}-я декада (${ranges[k]})`);
+      b.rows.filter(r => r.kind === 'decade').forEach(r => {
+        body += sumRow(r, 'decr');
       });
     }
     const tot = t.total;
     body += `<tr class="tot"><td class="first">${tot.label}</td>${cols.map(c => {
       const v = tot.values[c.key];
-      return v === null ? `<td class="num na" title="Валидных месяцев: ${tot.valid_months[c.key]} из ${tot.months}${tot.months === 12 ? ' — годовое значение только при всех 12' : ''}">н/п</td>` : cell(c, v);
+      const coverage = `Валидных месяцев: ${tot.valid_months[c.key]} из ${tot.months}`;
+      return v === null ? `<td class="num na" title="${coverage}${tot.label === 'Год' ? ' — годовое значение только при всех 12' : ''}">н/п</td>`
+        : cell(c, v, coverage);
     }).join('')}</tr>`;
     return body;
   };
@@ -554,6 +563,7 @@ async function renderTables(main) {
   const isValid = entry => daily
     ? entry.values[S.var] != null
     : monthSummary(entry).valid[S.var] === true;
+  const hasData = entries.some(entry => daily ? isValid(entry) : entry.rows.some(r => r.values[S.var] != null));
   const sub = mode === 'daily'
     ? `Полных суток: ${t.complete_days} из ${t.days}. Сутки полные, если ${t.rule}. Флаги качества исключены.`
     : 'Нажмите на месяц, чтобы показать три декады. «н/п» — месяц неполный: больше 10 неполных дней или 5 подряд.';
@@ -561,7 +571,9 @@ async function renderTables(main) {
     <div class="filehead"><b>${esc(S.station)}: ${esc(mode === 'daily' ? t.title : periodLabel())}</b>
       <span class="hint2">${mode === 'daily' ? 'суточная таблица' : 'декадная таблица'}</span><span class="sp"></span>
       <a class="btn" href="${apiUrl('/api/table.xlsx', { mode })}">${ICON.dl}Скачать Excel</a></div>
-    <p class="note" style="padding-top:2px">${esc(sub)}${mode === 'daily' ? '' : ' Для суточной таблицы выберите «Месяц».'}</p>
+    <p class="note" style="padding-top:2px">${esc(sub)}${mode === 'daily' ? '' : ' Для суточной таблицы выберите «Месяц».'}
+      ${!daily && S.kind === 'custom' ? ` Валидных месяцев для выбранного параметра: ${t.total.valid_months[S.var] ?? 0} из ${t.total.months}.` : ''}
+      ${hasData ? '' : ' За выбранный период нет пригодных данных по этому параметру.'}</p>
     <div class="table-filter">
       <div class="toggle" role="group" aria-label="Валидность по выбранному параметру">
         ${filterOptions.map(([value, label]) => `<button type="button" data-validity="${value}">${label}</button>`).join('')}
@@ -758,22 +770,34 @@ const PALETTE = [C.accent, '#B0731B', '#2F6DB5', '#8C5BA8', '#C8323C', '#1F8A86'
 const CA = C.accent, CB = '#B0731B';
 /* Две станции за один период: по умолчанию Кр1 «поляна» и Кр2 «поле».
    Месячные средние (только валидные месяцы обеих), разница A − B и средний суточный ход по общим полным дням. */
-async function renderStations(main) {
+let lastRoutedPage;
+async function renderStations(main, entering) {
   const r = await api('/api/pair', { var: S.var, a: UI.pa || '', b: UI.pb || '' });
   UI.pa = r.a; UI.pb = r.b;
+  if (entering && !r.common_days && r.latest_common_day) {
+    const day = parseISO(r.latest_common_day);
+    const y = day.getFullYear(), i = day.getMonth();
+    if (fits('month', y, i)) {
+      Object.assign(S, { kind: 'month', y, i });
+      return route();
+    }
+  }
   const v = r.var, u = v.unit;
   const pick = (id, cur, color) => `<label class="pill"><span class="tag" style="background:${color}"></span><select id="${id}" class="bare">${r.stations.map(n => `<option ${n === cur ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>`;
   const head = `<div class="tb">${pick('pa', r.a, CA)}<span class="vs">и</span>${pick('pb', r.b, CB)}<span class="sp"></span>
     ${r.common_days ? `<span class="pairsum">${pairSentence(r)}</span>` : ''}</div>`;
   if (!r.common_days) {
-    main.innerHTML = `<div class="box panel">${head}<div class="empty"><b>Нет общих полных дней</b>У станций «${esc(r.a)}» и «${esc(r.b)}» в выбранном периоде нет дней, когда обе работали полностью. АМЕ-60 и Сокол М1 — разные приборы без периода совместной работы, по заданию их ряды не сравниваются и не объединяются.</div></div>`;
+    main.innerHTML = `<div class="box panel">${head}<div class="empty"><b>Нет общих полных дней</b>У станций «${esc(r.a)}» и «${esc(r.b)}» в выбранном периоде нет дней, когда обе работали полностью. Выберите другой период или пару станций.</div></div>`;
     bindPair(); return;
   }
-  const mx = r.months.x;
+  const daily = S.kind === 'month';
+  const series = daily ? r.days : r.months;
+  const mx = series.x;
+  const granularity = daily ? 'по дням' : 'по месяцам';
   main.innerHTML = `<div class="box panel">${head}</div>
   <div class="grid2 mt">
-    <div class="box panel"><div class="tb">${dlBtn('ch-pm', 'по месяцам')}</div>
-      ${panelTitle(`${v.label}: по месяцам`, `${periodLabel()}, столбики — разница`, 'Месячные средние двух станций. Учитываются только месяцы, валидные на обеих (не более 10 неполных дней и нет 5 подряд). Столбики внизу — разница A − B.')}
+    <div class="box panel"><div class="tb">${dlBtn('ch-pm', granularity)}</div>
+      ${panelTitle(`${v.label}: ${granularity}`, `${periodLabel()}, столбики — разница`, daily ? 'Дневные значения двух станций. Разница — только за дни с данными у обеих.' : 'Месячные средние двух станций. Учитываются только месяцы, валидные на обеих (не более 10 неполных дней и нет 5 подряд). Столбики внизу — разница A − B.')}
       <div class="chart" id="ch-pm"></div>
       <div class="legend"><span class="chip" style="border-color:${CA};color:${CA}">${esc(r.a)}</span><span class="chip" style="border-color:${CB};color:${CB}">${esc(r.b)}</span></div></div>
     <div class="box panel"><div class="tb">${dlBtn('ch-pd', 'суточный ход')}</div>
@@ -781,12 +805,12 @@ async function renderStations(main) {
       <div class="chart" id="ch-pd"></div>
       <div class="legend"><span class="chip" style="border-color:${CA};color:${CA}">${esc(r.a)}</span><span class="chip" style="border-color:${CB};color:${CB}">${esc(r.b)}</span></div></div>
   </div>
-  <div class="box panel mt"><div class="head"><b>По месяцам</b><span>${esc(v.label.toLowerCase())}, ${esc(u)}</span></div>
-    <div class="tablewrap"><table class="t"><thead><tr><th>Месяц</th><th class="num">${esc(r.a)}</th><th class="num">${esc(r.b)}</th><th class="num">Разница</th></tr></thead><tbody>
-    ${mx.map((x, k) => { const d = parseISO(x); const a = r.months.a[k], b = r.months.b[k], df = r.months.diff[k];
-      return `<tr><td>${cap(MONTHS[d.getMonth()])} ${d.getFullYear()}</td><td class="num">${a === null ? '<span class="na">н/п</span>' : fmt(a)}</td><td class="num">${b === null ? '<span class="na">н/п</span>' : fmt(b)}</td>
+  <div class="box panel mt"><div class="head"><b>${daily ? 'По дням' : 'По месяцам'}</b><span>${esc(v.label.toLowerCase())}, ${esc(u)}</span></div>
+    <div class="tablewrap"><table class="t"><thead><tr><th>${daily ? 'Дата' : 'Месяц'}</th><th class="num">${esc(r.a)}</th><th class="num">${esc(r.b)}</th><th class="num">Разница</th></tr></thead><tbody>
+    ${mx.map((x, k) => { const d = parseISO(x); const a = series.a[k], b = series.b[k], df = series.diff[k];
+      return `<tr><td>${daily ? shortDate(x) : `${cap(MONTHS[d.getMonth()])} ${d.getFullYear()}`} </td><td class="num">${a === null ? '<span class="na">н/п</span>' : fmt(a)}</td><td class="num">${b === null ? '<span class="na">н/п</span>' : fmt(b)}</td>
       <td class="num">${df === null ? '—' : `<b class="${df > 0 ? 'warm' : df < 0 ? 'cold' : ''}">${fmt(df, 2, true)}</b>`}</td></tr>`; }).join('')}
-    </tbody></table></div><p class="note">«н/п» — месяц неполный на этой станции. Разница — только для месяцев, валидных на обеих.</p></div>`;
+    </tbody></table></div><p class="note">${daily ? '«н/п» — нет полного дневного значения. Разница — только за дни с данными у обеих станций.' : '«н/п» — месяц неполный на этой станции. Разница — только для месяцев, валидных на обеих.'}</p></div>`;
   if (r.suspicious.length) {
     const items = r.suspicious.map(x => { const d = parseISO(x.month); return `${MONTHS[d.getMonth()]} ${d.getFullYear()} (${fmt(x.diff, 1, true)} ${esc(u)} при обычных ${fmt(x.typical, 1, true)})`; });
     main.insertAdjacentHTML('afterbegin', `<div class="box alert"><b>Возможен сбой датчика.</b> Разница между станциями резко выбивается из обычной: ${items.join('; ')}.
@@ -794,21 +818,25 @@ async function renderStations(main) {
   }
   const diffBar = (x, d, ax) => ({ type: 'bar', x, y: d, yaxis: ax, hoverinfo: 'none', opacity: .55,
     marker: { color: d.map(z => z === null ? 'rgba(0,0,0,0)' : z >= 0 ? C.warm : C.cold) } });
-  const mLabels = mx.map(x => { const d = parseISO(x); return `${MSHORT[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`; });
+  const mLabels = mx.map(x => { const d = parseISO(x); return daily ? shortDate(x) : `${MSHORT[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`; });
   const lay2 = { hovermode: 'x', yaxis: { domain: [.32, 1], ticksuffix: ' ' + u }, yaxis2: { ...AX, domain: [0, .24], zeroline: true, zerolinecolor: C.ink3 }, xaxis: { anchor: 'y2' } };
   const pm = plot('ch-pm', [
-    { x: mLabels, y: r.months.a, mode: 'lines+markers', line: { color: CA, width: 2.4 }, marker: { size: 6 }, hoverinfo: 'none', connectgaps: false },
-    { x: mLabels, y: r.months.b, mode: 'lines+markers', line: { color: CB, width: 2.4 }, marker: { size: 6 }, hoverinfo: 'none', connectgaps: false },
-    diffBar(mLabels, r.months.diff, 'y2'), dotTrace()], lay2);
+    { x: mLabels, y: series.a, mode: 'lines+markers', line: { color: CA, width: 2.4 }, marker: { size: 6 }, hoverinfo: 'none', connectgaps: false },
+    { x: mLabels, y: series.b, mode: 'lines+markers', line: { color: CB, width: 2.4 }, marker: { size: 6 }, hoverinfo: 'none', connectgaps: false },
+    diffBar(mLabels, series.diff, 'y2'), dotTrace()], lay2);
+  await pm._plotReady;
+  if (!pm.isConnected) return;
   followDot(pm, [0, 1], 3, pts => { const k = pts[0].pointNumber;
-    return `<b>${mLabels[k]}</b><br><span style="color:${CA}">${esc(r.a)}</span> ${fmt(r.months.a[k])} ${u}<br><span style="color:${CB}">${esc(r.b)}</span> ${fmt(r.months.b[k])} ${u}` +
-      (r.months.diff[k] !== null ? `<br>разница ${fmt(r.months.diff[k], 2, true)}` : ''); });
+    return `<b>${mLabels[k]}</b><br><span style="color:${CA}">${esc(r.a)}</span> ${fmt(series.a[k])} ${u}<br><span style="color:${CB}">${esc(r.b)}</span> ${fmt(series.b[k])} ${u}` +
+      (series.diff[k] !== null ? `<br>разница ${fmt(series.diff[k], 2, true)}` : ''); });
   const hrs = r.diurnal.hours.map(h => `${String(h).padStart(2, '0')}:00`);
   const dd = r.diurnal.a.map((a, k) => a === null || r.diurnal.b[k] === null ? null : a - r.diurnal.b[k]);
   const pd = plot('ch-pd', [
     { x: hrs, y: r.diurnal.a, mode: 'lines+markers', line: { color: CA, width: 2.4, shape: 'spline' }, marker: { size: 5 }, hoverinfo: 'none' },
     { x: hrs, y: r.diurnal.b, mode: 'lines+markers', line: { color: CB, width: 2.4, shape: 'spline' }, marker: { size: 5 }, hoverinfo: 'none' },
     diffBar(hrs, dd, 'y2'), dotTrace()], { ...lay2, xaxis: { anchor: 'y2', dtick: 3 } });
+  await pd._plotReady;
+  if (!pd.isConnected) return;
   followDot(pd, [0, 1], 3, pts => { const k = pts[0].pointNumber;
     return `<b>${hrs[k]}</b><br><span style="color:${CA}">${esc(r.a)}</span> ${fmt(r.diurnal.a[k])} ${u}<br><span style="color:${CB}">${esc(r.b)}</span> ${fmt(r.diurnal.b[k])} ${u}` +
       (dd[k] !== null ? `<br>разница ${fmt(dd[k], 2, true)}` : ''); });
@@ -1081,6 +1109,21 @@ async function upload(files) {
 async function switchDataset(id) { S.ds = id; S.station = ''; S.y = 0; await loadMeta(); route(); }
 
 // ------------------------------------------------------------------ каркас
+async function renderDailySummary(main) {
+  const station = META.stations.find(x => x.id === S.station);
+  const vars = META.variables.filter(v => station.vars.includes(v.id));
+  const series = await Promise.all(vars.map(v => api('/api/series', { var: v.id, freq: 'D' })));
+  const dates = [...new Set(series.flatMap(r => r.x))].sort();
+  const values = series.map(r => new Map(r.x.map((x, i) => [x, r.y[i]])));
+  const section = document.createElement('section');
+  section.className = 'box panel mt';
+  section.innerHTML = `<div class="head"><b>По дням</b><span>${esc(periodLabel())}</span></div>
+    <div class="tablewrap"><table class="t"><thead><tr><th>Дата</th>${vars.map(v => `<th class="num">${esc(v.label)}, ${esc(v.unit)}</th>`).join('')}</tr></thead><tbody>
+    ${dates.map(date => `<tr><td>${shortDate(date)}</td>${values.map(v => `<td class="num">${v.get(date) == null ? '—' : fmt(v.get(date))}</td>`).join('')}</tr>`).join('')}
+    </tbody></table></div><p class="note">Дневные значения за выбранный месяц. «—» — нет полного дневного значения.</p>`;
+  main.prepend(section);
+}
+
 const PAGES = { overview: renderOverview, tables: renderTables, forecast: renderForecast, trends: renderTrends, compare: renderCompare, stations: renderStations, agro: renderAgro, data: renderData };
 
 async function loadMeta() {
@@ -1109,17 +1152,14 @@ function syncControls() {
   const varsHere = S.page === 'stations' ? META.stations.flatMap(x => x.vars) : st.vars;
   if (!varsHere.includes(S.var)) S.var = varsHere.includes('t_air') ? 't_air' : varsHere[0];
   $('#var').innerHTML = META.variables.filter(v => varsHere.includes(v.id)).map(v => `<option value="${v.id}" ${v.id === S.var ? 'selected' : ''}>${esc(v.label)}</option>`).join('');
-  $('#latest b').textContent = ruDate(st.end);
-  $('#latest span').textContent = `Данные с ${parseISO(st.start).getFullYear()} по`;
   ensurePeriod();
   $$('#kind button').forEach(b => b.classList.toggle('on', b.dataset.kind === S.kind));
   $('#period-box').classList.toggle('custom-on', S.kind === 'custom');
   $('#cur-text').textContent = periodLabel();
   if (!$('#picker').hidden) renderPicker();
   for (const b of $$('#datenav .nb')) { const t = shifted(Number(b.dataset.step)); b.disabled = !fits(S.kind, t.y, t.i); }
+  if (S.kind === 'custom') $('#range-label').textContent = `${shortDate(S.cs)} — ${shortDate(S.ce)}`;
   const [lo, hi] = dataRange();
-  for (const id of ['c-start', 'c-end']) { $('#' + id).min = iso(lo); $('#' + id).max = iso(hi); }
-  $('#c-start').value = S.cs; $('#c-end').value = S.ce;
   syncBase();
   // в строке — только то, чем управляется текущий экран
   const ctl = new Set(CTL[S.page] || []);
@@ -1127,7 +1167,10 @@ function syncControls() {
   if (ctl.has('scope')) $('#scope').innerHTML = SCOPES.map(([k, n]) => `<option value="${k}" ${k === UI.trendScope ? 'selected' : ''}>${n}</option>`).join('');
   if (ctl.has('cmp')) {
     ensureCmp();
-    for (const k of ['a0', 'a1', 'b0', 'b1']) { const el = $('#' + k); el.min = iso(lo); el.max = iso(hi); el.value = UI.cmp[k]; }
+    for (const trigger of $$('[data-range-pair]')) {
+      const pair = trigger.dataset.rangePair;
+      trigger.children[1].textContent = `${shortDate(UI.cmp[pair + '0'])} — ${shortDate(UI.cmp[pair + '1'])}`;
+    }
   }
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.page === S.page));
 }
@@ -1176,11 +1219,155 @@ async function route() {
   const main = $('#page');
   main.classList.add('loading');
   try {
-    await PAGES[S.page](main);
+    const entering = lastRoutedPage !== S.page;
+    lastRoutedPage = S.page;
+    await PAGES[S.page](main, entering);
+    if (S.kind === 'month' && ['agro', 'data'].includes(S.page)) await renderDailySummary(main);
   } catch (e) {
     if (e === STALE) return;
     if (seq === routeSeq) { main.innerHTML = empty('Не получилось построить экран', e.message); console.error(e); }
   } finally { if (seq === routeSeq) main.classList.remove('loading'); }
+}
+
+const rangeFields = ['c-start', 'c-end'];
+const rangeMonths = [];
+
+function readRangeDate(id) {
+  const text = $('#' + id).value.trim();
+  const date = /^\d{2}\.\d{2}\.\d{4}$/.test(text) ? text.split('.').reverse().join('-') : '';
+  return validISO(date) ? date : '';
+}
+
+function renderRange() {
+  const [lo, hi] = dataRange().map(iso);
+  const [start, end] = rangeFields.map(readRangeDate);
+  let message = '';
+  if (!start || !end) message = 'Введите обе даты в формате ДД.ММ.ГГГГ.';
+  else if (start > end) message = 'Дата начала должна быть раньше даты окончания или совпадать с ней.';
+  else if (start < lo || end > hi) message = `Доступные даты: ${shortDate(lo)} — ${shortDate(hi)}.`;
+  $('#range-message').textContent = message;
+  $('#range-apply').disabled = Boolean(message);
+  rangeFields.forEach((id, i) => {
+    const day = i ? end : start;
+    $('#' + id).setAttribute('aria-invalid', String(!day || day < lo || day > hi || Boolean(start && end && start > end)));
+  });
+  const firstYear = Number(lo.slice(0, 4)), lastYear = Number(hi.slice(0, 4));
+  const calendars = $('#range-calendars');
+  const focus = calendars.contains(document.activeElement) ? document.activeElement.dataset.focus : '';
+  calendars.innerHTML = rangeMonths.map((view, i) => {
+    const y = view.getFullYear(), m = view.getMonth(), offset = (view.getDay() + 6) % 7;
+    const days = new Date(y, m + 1, 0).getDate();
+    const label = i ? 'окончания' : 'начала';
+    const arrow = (step, disabled) => `<button type="button" data-step-month="${step}" data-focus="${i}-step-${step}"
+      aria-label="${step < 0 ? 'Предыдущий' : 'Следующий'} месяц ${label}" ${disabled ? 'disabled' : ''}>
+      <span class="range-chevron" aria-hidden="true"></span></button>`;
+    return `<section class="range-calendar" data-calendar="${i}" aria-label="Календарь ${label}">
+      <div class="range-calendar-head">
+        ${arrow(-1, iso(view).slice(0, 7) <= lo.slice(0, 7))}
+        <select data-focus="${i}-month" data-view="month" aria-label="Месяц ${label}">${MONTHS.map((name, n) =>
+          `<option value="${n}" ${n === m ? 'selected' : ''}>${cap(name)}</option>`).join('')}</select>
+        <select data-focus="${i}-year" data-view="year" aria-label="Год ${label}">${Array.from({ length: lastYear - firstYear + 1 }, (_, n) => {
+          const year = firstYear + n;
+          return `<option ${year === y ? 'selected' : ''}>${year}</option>`;
+        }).join('')}</select>
+        ${arrow(1, iso(view).slice(0, 7) >= hi.slice(0, 7))}
+      </div>
+      <div class="range-days">${['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(d => `<small>${d}</small>`).join('')}
+        ${'<span></span>'.repeat(offset)}
+        ${Array.from({ length: days }, (_, n) => {
+          const date = iso(new Date(y, m, n + 1));
+          const edge = date === start || date === end;
+          return `<button type="button" data-day="${date}" data-focus="${i}-${date}" aria-label="${ruDate(date)}"
+            aria-pressed="${edge}" class="${edge ? 'range-edge' : date > start && date < end ? 'range-between' : ''}"
+            ${date < lo || date > hi ? 'disabled' : ''}>${n + 1}</button>`;
+        }).join('')}
+      </div></section>`;
+  }).join('');
+  if (focus) calendars.querySelector(`[data-focus="${focus}"]:not(:disabled)`)?.focus({ preventScroll: true });
+}
+
+function setRangeMonth(i, date) {
+  const [lo, hi] = dataRange();
+  const month = new Date(date.getFullYear(), date.getMonth(), 1);
+  const first = new Date(lo.getFullYear(), lo.getMonth(), 1);
+  const last = new Date(hi.getFullYear(), hi.getMonth(), 1);
+  rangeMonths[i] = month < first ? first : month > last ? last : month;
+}
+
+let activeRangeTrigger;
+
+function openRange(trigger = $('#range-trigger')) {
+  const dialog = $('#range-dialog');
+  if (dialog.open || !META) return;
+  activeRangeTrigger = trigger;
+  const pair = trigger.dataset.rangePair;
+  $('#range-title').textContent = pair ? `Выбор периода ${pair.toUpperCase()}` : 'Выбор периода';
+  const dates = pair ? [UI.cmp[pair + '0'], UI.cmp[pair + '1']] : [S.cs, S.ce];
+  dates.forEach((date, i) => {
+    $('#' + rangeFields[i]).value = shortDate(date);
+    setRangeMonth(i, parseISO(date));
+  });
+  renderRange();
+  dialog.showModal();
+  trigger.setAttribute('aria-expanded', 'true');
+}
+
+function bindRange() {
+  const dialog = $('#range-dialog'), calendars = $('#range-calendars');
+  for (const trigger of $$('#range-trigger, [data-range-pair]')) {
+    trigger.addEventListener('click', () => { if (!trigger.dataset.rangePair || UI.cmp) openRange(trigger); });
+  }
+  $('#range-cancel').addEventListener('click', () => dialog.close());
+  const outside = event => {
+    if (event.target !== dialog) return false;
+    const { left, right, top, bottom } = dialog.getBoundingClientRect();
+    return event.clientX < left || event.clientX > right || event.clientY < top || event.clientY > bottom;
+  };
+  let startedOutside = false;
+  dialog.addEventListener('pointerdown', event => { startedOutside = outside(event); });
+  dialog.addEventListener('click', event => {
+    if (startedOutside && outside(event)) dialog.close();
+    startedOutside = false;
+  });
+  dialog.addEventListener('close', () => activeRangeTrigger?.setAttribute('aria-expanded', 'false'));
+  rangeFields.forEach((id, i) => $('#' + id).addEventListener('input', () => {
+    const date = readRangeDate(id);
+    if (date) setRangeMonth(i, parseISO(date));
+    renderRange();
+  }));
+  calendars.addEventListener('change', event => {
+    const control = event.target;
+    const i = Number(control.closest('[data-calendar]').dataset.calendar);
+    const view = rangeMonths[i];
+    setRangeMonth(i, new Date(control.dataset.view === 'year' ? Number(control.value) : view.getFullYear(),
+      control.dataset.view === 'month' ? Number(control.value) : view.getMonth(), 1));
+    renderRange();
+  });
+  calendars.addEventListener('click', event => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    const i = Number(button.closest('[data-calendar]').dataset.calendar);
+    const view = rangeMonths[i];
+    if (button.dataset.day) $('#' + rangeFields[i]).value = shortDate(button.dataset.day);
+    else setRangeMonth(i, new Date(view.getFullYear(), view.getMonth() + Number(button.dataset.stepMonth), 1));
+    renderRange();
+  });
+  $('#range-form').addEventListener('submit', event => {
+    event.preventDefault();
+    renderRange();
+    if ($('#range-apply').disabled) return;
+    const [start, end] = rangeFields.map(readRangeDate);
+    const pair = activeRangeTrigger.dataset.rangePair;
+    if (pair) {
+      UI.cmp[pair + '0'] = start;
+      UI.cmp[pair + '1'] = end;
+    } else {
+      S.cs = start;
+      S.ce = end;
+    }
+    dialog.close();
+    route();
+  });
 }
 
 function bind() {
@@ -1188,14 +1375,10 @@ function bind() {
   $('#var').addEventListener('change', e => { S.var = e.target.value; route(); });
   $('#station').addEventListener('change', e => { S.station = e.target.value; UI.ref = ''; route(); });
   $('#scope').addEventListener('change', e => { UI.trendScope = e.target.value; route(); });
-  // периоды A/B применяются сразу, как только обе даты пары корректны
-  for (const k of ['a0', 'a1', 'b0', 'b1']) $('#' + k).addEventListener('change', () => {
-    const c = { a0: $('#a0').value, a1: $('#a1').value, b0: $('#b0').value, b1: $('#b1').value };
-    if (Object.values(c).every(Boolean) && c.a0 <= c.a1 && c.b0 <= c.b1) { UI.cmp = c; route(); }
-  });
-  $('#kind').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return;
+  $('#kind').addEventListener('click', e => { const b = e.target.closest('button'); if (!b || !META) return;
     if (S.kind !== b.dataset.kind) { const [a, z] = bounds(); S.kind = b.dataset.kind;
-      if (S.kind === 'custom') { S.cs = iso(a); S.ce = iso(z); } else { const t = latestPeriod(S.kind); S.y = t.y; S.i = t.i; } route(); } });
+      if (S.kind === 'custom') { S.cs = iso(a); S.ce = iso(z); } else { const t = latestPeriod(S.kind); S.y = t.y; S.i = t.i; } route(); }
+    if (S.kind === 'custom') openRange(); });
   $('#datenav').addEventListener('click', e => {
     const b = e.target.closest('.nb');
     if (b && !b.disabled) { closePicker(); Object.assign(S, shifted(Number(b.dataset.step))); route(); }
@@ -1210,8 +1393,7 @@ function bind() {
   });
   document.addEventListener('click', e => { if (!e.target.closest('#datenav')) closePicker(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closePicker(); });
-  for (const id of ['c-start', 'c-end']) $('#' + id).addEventListener('change', () => {
-    const a = $('#c-start').value, b = $('#c-end').value; if (a && b && a <= b) { S.cs = a; S.ce = b; route(); } });
+  bindRange();
   const pop = $('#settings'), btn = $('#settings-btn');
   btn.addEventListener('click', () => { pop.hidden = !pop.hidden; btn.setAttribute('aria-expanded', String(!pop.hidden)); });
   document.addEventListener('click', e => { if (!e.target.closest('.settings')) { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); } });
@@ -1227,7 +1409,13 @@ function bind() {
     if (e.target.closest('input, select, textarea') || !PERIOD_PAGES.has(S.page) || S.kind === 'custom') return;
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { const t = shifted(e.key === 'ArrowLeft' ? -1 : 1); if (fits(S.kind, t.y, t.i)) { Object.assign(S, t); route(); } }
   });
-  window.addEventListener('hashchange', () => { const p = S.page; readHash(); if (p !== S.page) route(); });
+  window.addEventListener('hashchange', async () => {
+    const dataset = S.ds;
+    $('#range-dialog').close();
+    readHash();
+    if (dataset !== S.ds) await loadMeta();
+    route();
+  });
 }
 
 (async function init() {
@@ -1236,4 +1424,62 @@ function bind() {
     if (S.ds !== 'clgz') { S.ds = 'clgz'; S.station = ''; await loadMeta(); } else { $('#page').innerHTML = empty('Сервер недоступен', e.message); return; }
   }
   route();
+})();
+
+// Consistent option lists for existing and dynamically rendered selects.
+(() => {
+  let panel, owner;
+  function close() { panel?.remove(); panel = null; owner = null; }
+  function open(select) {
+    close(); owner = select;
+    panel = document.createElement('div'); panel.className = 'option-panel';
+    panel.setAttribute('role', 'listbox');
+    for (const option of select.options) {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = option.textContent;
+      b.disabled = option.disabled; b.hidden = option.hidden;
+      b.setAttribute('role', 'option'); b.setAttribute('aria-selected', String(option.selected));
+      b.onclick = () => {
+        const changed = select.value !== option.value;
+        select.value = option.value; close(); select.focus();
+        if (changed) { select.dispatchEvent(new Event('input', {bubbles:true})); select.dispatchEvent(new Event('change', {bubbles:true})); }
+      };
+      panel.append(b);
+    }
+    (select.closest('dialog') || document.body).append(panel);
+    const r = (select.closest('.selector') || select).getBoundingClientRect(), w = Math.min(Math.max(r.width, 200), innerWidth - 24);
+    panel.style.width = w + 'px'; panel.style.left = Math.max(12, Math.min(r.left, innerWidth - w - 12)) + 'px';
+    const below = innerHeight - r.bottom - 18;
+    if (below < 180 && r.top > below) { panel.style.bottom = innerHeight - r.top + 6 + 'px'; panel.style.maxHeight = Math.min(320, r.top - 18) + 'px'; }
+    else { panel.style.top = r.bottom + 6 + 'px'; panel.style.maxHeight = Math.max(40, Math.min(320, below)) + 'px'; }
+    (panel.querySelector('[aria-selected="true"]') || panel.querySelector('button'))?.focus();
+  }
+  function selectFor(target) {
+    if (!(target instanceof Element)) return null;
+    return target.closest('select') || target.closest('label')?.querySelector('select');
+  }
+  // Prevent native select opening and label-generated select clicks.
+  document.addEventListener('mousedown', e => {
+    const select = selectFor(e.target);
+    if (select && !select.disabled && !select.multiple) e.preventDefault();
+  }, true);
+  document.addEventListener('click', e => {
+    const select = selectFor(e.target);
+    if (select && !select.disabled && !select.multiple) {
+      e.preventDefault();
+      if (owner === select) close(); else open(select);
+    } else if (panel && !panel.contains(e.target)) close();
+  });
+  document.addEventListener('keydown', e => {
+    if (panel) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); const s = owner; close(); s?.focus(); }
+      else if (e.key === 'Tab') close();
+      else if (['ArrowDown','ArrowUp','Home','End'].includes(e.key)) {
+        e.preventDefault(); const bs = [...panel.querySelectorAll('button:not(:disabled):not([hidden])')], i = bs.indexOf(document.activeElement);
+        bs[e.key === 'Home' ? 0 : e.key === 'End' ? bs.length - 1 : (i + (e.key === 'ArrowDown' ? 1 : -1) + bs.length) % bs.length]?.focus();
+      }
+    } else if (e.target instanceof HTMLSelectElement && [' ','Enter','ArrowDown','ArrowUp'].includes(e.key)) { e.preventDefault(); open(e.target); }
+  }, true);
+  window.addEventListener('resize', close);
+  window.addEventListener('hashchange', close);
+  window.addEventListener('scroll', e => { if (panel && !panel.contains(e.target)) close(); }, true);
 })();
