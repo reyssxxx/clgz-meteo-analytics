@@ -11,7 +11,7 @@ const SEASONS = ['Зима', 'Весна', 'Лето', 'Осень'];
 // Что показывает строка управления на каждом экране
 const CTL = {
   overview: ['var', 'station', 'period', 'settings'],
-  tables: ['station', 'period'],
+  tables: ['var', 'station', 'period'],
   trends: ['var', 'station', 'scope', 'settings'],
   compare: ['var', 'station', 'cmp', 'settings'],
   stations: ['var', 'period'],
@@ -320,7 +320,7 @@ const varById = id => META.variables.find(v => v.id === id) || { id, label: id, 
 const empty = (title, text) => `<div class="box empty"><b>${esc(title)}</b>${esc(text)}</div>`;
 
 // ------------------------------------------------------------------ ОБЗОР
-const UI = { yearsMode: 'values', freq: 'MS', trendScope: '', agroPick: '', cmp: null, ref: '' };
+const UI = { yearsMode: 'values', freq: 'MS', trendScope: '', agroPick: '', cmp: null, ref: '', tableFilter: 'all' };
 
 async function renderOverview(main) {
   const v = varById(S.var);
@@ -493,56 +493,142 @@ async function renderTables(main) {
   };
   const groups = [];
   for (const c of cols) { const g = groups[groups.length - 1]; if (g && g.name === c.group) g.n++; else groups.push({ name: c.group, n: 1 }); }
-  const head = `<thead><tr><th rowspan="2" class="first">${mode === 'daily' ? 'Дата' : 'Период'}</th>${groups.map(g => `<th colspan="${g.n}" class="grp">${esc(g.name)}</th>`).join('')}
-    ${mode === 'daily' ? '<th rowspan="2" class="num">Сроков</th>' : ''}</tr>
-    <tr>${cols.map(c => `<th class="num">${esc(c.label)}</th>`).join('')}</tr></thead>`;
-  const sumRow = (r, cls, label) => `<tr class="${cls}"><td class="first">${esc(label || r.label)}</td>${cols.map(c => {
+  const sortButton = (key, label, fullLabel = label) => `<button type="button" class="dt-sort" data-sort="${key}"
+    aria-label="Сортировать по столбцу «${esc(fullLabel)}»" title="Сортировать по столбцу «${esc(fullLabel)}»">${esc(label)}<span aria-hidden="true">↕</span></button>`;
+  const head = `<thead><tr><th rowspan="2" class="first">${sortButton('date', mode === 'daily' ? 'Дата' : 'Период')}</th>${groups.map(g => `<th colspan="${g.n}" class="grp">${esc(g.name)}</th>`).join('')}
+    ${mode === 'daily' ? `<th rowspan="2" class="num">${sortButton('obs', 'Сроков')}</th>` : ''}</tr>
+    <tr>${cols.map(c => `<th class="num">${sortButton(c.key, c.label, `${c.group} · ${c.label}`)}</th>`).join('')}</tr></thead>`;
+  const sumRow = (r, cls, label, firstCell = esc(label || r.label)) => `<tr class="${cls}"><td class="first">${firstCell}</td>${cols.map(c => {
     const v = r.values[c.key];
     if (r.kind === 'month' && r.valid && r.valid[c.key] === false)
       return `<td class="num na" title="Месяц не учитывается: больше 10 неполных дней или 5 подряд (полных дней: ${r.days[c.key]} из ${r.of})">н/п</td>`;
     if (r.kind === 'decade' && v !== null && r.days && r.days[c.key] < 7) return cell(c, v).replace('<td class="num">', `<td class="num warnc" title="Полных дней в декаде: ${r.days[c.key]}">`);
     return cell(c, v);
   }).join('')}${mode === 'daily' ? '<td></td>' : ''}</tr>`;
-  let body = '';
-  if (mode === 'daily') {
+  const dailyBody = (rows, sorted) => {
+    let body = '';
     const dec = t.summary.filter(s => s.kind === 'decade'), month = t.summary.find(s => s.kind === 'month');
-    t.rows.forEach((r, k) => {
+    rows.forEach((r, k) => {
       body += `<tr class="${r.complete ? '' : 'inc'}" ${r.complete ? '' : `title="Неполные сутки: ${r.obs} из ${r.of_obs} — в расчёт не входят"`}>
         <td class="first">${r.label}</td>${cols.map(c => cell(c, r.values[c.key])).join('')}
         <td class="num obs">${r.obs ? r.obs : '—'}${r.complete ? '' : ' <span class="badge">неполные</span>'}</td></tr>`;
-      const last = k === t.rows.length - 1 || t.rows[k + 1].decade !== r.decade;
-      if (last) body += sumRow(dec[r.decade - 1], 'dec');
+      if (!sorted && rows[k + 1]?.decade !== r.decade) body += sumRow(dec[r.decade - 1], 'dec');
     });
+    if (sorted) body += dec.map(r => sumRow(r, 'dec')).join('');
     body += sumRow(month, 'mon', 'Среднее за месяц');
     if (Object.keys(t.extremes).length) body += `<tr class="dec"><td class="first">Экстремум за месяц</td>${cols.map(c => {
       const e = t.extremes[c.key];
       return e ? `<td class="num">${fmt(e.value, 1)}<small> ${e.date}</small></td>` : '<td></td>';
     }).join('')}<td></td></tr>`;
-  } else {
+    return body;
+  };
+  const expandedMonths = new Set();
+  const periodBody = blocks => {
+    let body = '';
     const span = cols.length + 1;
-    for (const b of t.blocks) {
+    for (const b of blocks) {
       const empty = b.rows.every(r => cols.every(c => r.values[c.key] === null));
       if (empty) { body += `<tr class="mh nod"><td class="first">${esc(b.label)}</td><td colspan="${span - 1}" class="na">нет данных</td></tr>`; continue; }
-      body += `<tr class="mh"><td class="first" colspan="${span}">${esc(b.label)}</td></tr>`;
+      const expanded = expandedMonths.has(b.month);
+      const monthButton = `<button type="button" class="dt-month" data-month="${esc(b.month)}" aria-expanded="${expanded}">
+        <span aria-hidden="true">${expanded ? '▾' : '▸'}</span>${esc(b.label)}</button>`;
+      body += sumRow(monthSummary(b), 'mon', b.label, monthButton);
+      if (!expanded) continue;
       const lastDay = new Date(Number(b.month.slice(0, 4)), Number(b.month.slice(5, 7)), 0).getDate();
       const ranges = ['1–10', '11–20', `21–${lastDay}`];
-      b.rows.forEach((r, k) => { body += r.kind === 'month' ? sumRow(r, 'mon', 'За месяц') : sumRow(r, 'decr', `${k + 1}-я декада (${ranges[k]})`); });
+      b.rows.filter(r => r.kind === 'decade').forEach((r, k) => {
+        body += sumRow(r, 'decr', `${k + 1}-я декада (${ranges[k]})`);
+      });
     }
     const tot = t.total;
     body += `<tr class="tot"><td class="first">${tot.label}</td>${cols.map(c => {
       const v = tot.values[c.key];
       return v === null ? `<td class="num na" title="Валидных месяцев: ${tot.valid_months[c.key]} из ${tot.months}${tot.months === 12 ? ' — годовое значение только при всех 12' : ''}">н/п</td>` : cell(c, v);
     }).join('')}</tr>`;
-  }
+    return body;
+  };
+  const daily = mode === 'daily';
+  const entries = daily ? t.rows : t.blocks;
+  const monthSummary = block => block.rows.find(r => r.kind === 'month');
+  const filterOptions = [['all', 'Все'], ['valid', 'Валидные'], ['incomplete', 'Неполные']];
+  const isValid = entry => daily
+    ? entry.values[S.var] != null
+    : monthSummary(entry).valid[S.var] === true;
   const sub = mode === 'daily'
     ? `Полных суток: ${t.complete_days} из ${t.days}. Сутки полные, если ${t.rule}. Флаги качества исключены.`
-    : 'По каждому месяцу — три декады (1–10, 11–20, 21–конец) и месяц. «н/п» — месяц неполный: больше 10 неполных дней или 5 подряд.';
+    : 'Нажмите на месяц, чтобы показать три декады. «н/п» — месяц неполный: больше 10 неполных дней или 5 подряд.';
   main.innerHTML = `<div class="box panel tables">
     <div class="filehead"><b>${esc(S.station)}: ${esc(mode === 'daily' ? t.title : periodLabel())}</b>
       <span class="hint2">${mode === 'daily' ? 'суточная таблица' : 'декадная таблица'}</span><span class="sp"></span>
       <a class="btn" href="${apiUrl('/api/table.xlsx', { mode })}">${ICON.dl}Скачать Excel</a></div>
     <p class="note" style="padding-top:2px">${esc(sub)}${mode === 'daily' ? '' : ' Для суточной таблицы выберите «Месяц».'}</p>
-    <div class="tablewrap dtwrap"><table class="t dt">${head}<tbody>${body}</tbody></table></div></div>`;
+    <div class="table-filter">
+      <div class="toggle" role="group" aria-label="Валидность по выбранному параметру">
+        ${filterOptions.map(([value, label]) => `<button type="button" data-validity="${value}">${label}</button>`).join('')}
+      </div>
+      <span class="hint2" role="status"></span>
+    </div>
+    <div class="tablewrap dtwrap"><table class="t dt">${head}<tbody></tbody></table></div></div>`;
+  const table = main.querySelector('.dt');
+  const filter = main.querySelector('.table-filter');
+  let sortKey = '', direction = 1;
+  const renderBody = () => {
+    const filtered = UI.tableFilter !== 'all';
+    const visible = filtered ? entries.filter(entry => isValid(entry) === (UI.tableFilter === 'valid')) : entries;
+    const value = entry => {
+      if (sortKey === 'date') return daily ? entry.date : entry.month;
+      if (sortKey === 'obs') return entry.obs || null;
+      return daily ? entry.values[sortKey] : monthSummary(entry).values[sortKey];
+    };
+    const ordered = sortKey ? [...visible].sort((a, b) => {
+      const x = value(a), y = value(b);
+      if (x == null) return y == null ? 0 : 1;
+      if (y == null) return -1;
+      return direction * (x > y ? 1 : x < y ? -1 : 0);
+    }) : visible;
+    const emptyRow = ordered.length ? '' : `<tr><td colspan="${cols.length + (daily ? 2 : 1)}" class="empty">Нет строк для выбранного фильтра.</td></tr>`;
+    const body = daily ? dailyBody(ordered, Boolean(sortKey) || filtered) : periodBody(ordered);
+    table.tBodies[0].innerHTML = emptyRow + body;
+    filter.querySelector('[role="status"]').textContent =
+      `Показано: ${ordered.length} из ${entries.length}${filtered ? ' · итоги за весь период' : ''}`;
+    filter.querySelectorAll('button').forEach(button => {
+      const active = button.dataset.validity === UI.tableFilter;
+      button.classList.toggle('on', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+  };
+  table.tHead.addEventListener('click', event => {
+    const button = event.target.closest('.dt-sort');
+    if (!button) return;
+    const key = button.dataset.sort;
+    // Третий клик возвращает исходную хронологию.
+    const sameColumn = key === sortKey;
+    sortKey = sameColumn && direction === -1 ? '' : key;
+    direction = sameColumn ? -direction : 1;
+    table.tHead.querySelectorAll('.dt-sort').forEach(control => {
+      const header = control.closest('th');
+      const active = control.dataset.sort === sortKey;
+      if (active) header.setAttribute('aria-sort', direction === 1 ? 'ascending' : 'descending');
+      else header.removeAttribute('aria-sort');
+      control.lastElementChild.textContent = active ? (direction === 1 ? '↑' : '↓') : '↕';
+    });
+    renderBody();
+  });
+  filter.addEventListener('click', event => {
+    const button = event.target.closest('[data-validity]');
+    if (!button) return;
+    UI.tableFilter = button.dataset.validity;
+    renderBody();
+  });
+  table.tBodies[0].addEventListener('click', event => {
+    const button = event.target.closest('.dt-month');
+    if (!button) return;
+    const month = button.dataset.month;
+    if (!expandedMonths.delete(month)) expandedMonths.add(month);
+    renderBody();
+    table.querySelector(`[data-month="${month}"]`).focus({ preventScroll: true });
+  });
+  renderBody();
 }
 const RUMB = ['С', 'ССВ', 'СВ', 'ВСВ', 'В', 'ВЮВ', 'ЮВ', 'ЮЮВ', 'Ю', 'ЮЮЗ', 'ЮЗ', 'ЗЮЗ', 'З', 'ЗСЗ', 'СЗ', 'ССЗ'];
 

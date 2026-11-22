@@ -262,13 +262,20 @@ pre.sum { white-space: pre-wrap; font: 13px/1.5 "Source Sans 3", sans-serif; col
 
 /* ---------- экран «Таблицы» ---------- */
 .tables .hint2 { color: var(--ink-3); font-size: 14px; }
+.table-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 0 16px 4px; }
 .dtwrap { max-height: calc(100vh - 260px); overflow: auto; margin: 6px 12px 0; padding: 0; border: 1px solid var(--line-soft); border-radius: 10px; }
 table.dt { font-size: 14px; }
 table.dt thead th { position: sticky; background: #F6F7F8; z-index: 2; text-align: center; font-size: 13px; }
 table.dt thead tr:first-child th { top: 0; }
 table.dt thead tr:nth-child(2) th { top: 33px; }
 table.dt th.grp { border-bottom: 1px solid var(--line); }
+table.dt .dt-sort { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: inherit; cursor: pointer; }
+table.dt .dt-sort span { min-width: 10px; color: var(--ink-3); }
+table.dt .dt-sort:hover, table.dt .dt-sort:focus-visible, table.dt th[aria-sort] .dt-sort span { color: var(--accent); }
+table.dt .dt-month { display: inline-flex; align-items: center; gap: 6px; border: 0; padding: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+table.dt .dt-month span { width: 10px; color: var(--accent); }
 table.dt .first { position: sticky; left: 0; background: inherit; text-align: left; white-space: nowrap; z-index: 1; }
+table.dt thead th.first { background: #F6F7F8; z-index: 3; }
 table.dt tbody tr { background: #fff; }
 table.dt td { padding: 5px 10px; }
 table.dt tr.inc td { color: var(--ink-3); }
