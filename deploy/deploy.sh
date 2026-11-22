@@ -42,7 +42,7 @@ exists vpc subnet get --name "$SUBNET" || yc vpc subnet create --name "$SUBNET" 
 step "Виртуальная машина"
 # Вход сотрудника: логин и пароль берутся из окружения, в репозиторий не попадают.
 : "${CLGZ_EMPLOYEE_USER:?задайте CLGZ_EMPLOYEE_USER}" "${CLGZ_EMPLOYEE_PASSWORD:?задайте CLGZ_EMPLOYEE_PASSWORD}"
-ENV="PORT=8080,CLGZ_EMPLOYEE_USER=$CLGZ_EMPLOYEE_USER,CLGZ_EMPLOYEE_PASSWORD=$CLGZ_EMPLOYEE_PASSWORD"
+ENV="PORT=80,CLGZ_EMPLOYEE_USER=$CLGZ_EMPLOYEE_USER,CLGZ_EMPLOYEE_PASSWORD=$CLGZ_EMPLOYEE_PASSWORD"
 if exists compute instance get --name "$VM"; then
   yc compute instance update-container --name "$VM" --container-image "$IMAGE" --container-env "$ENV" >/dev/null
 else
@@ -56,4 +56,4 @@ else
 fi
 
 IP="$(yc compute instance get --name "$VM" --format json | jq -r '.network_interfaces[0].primary_v4_address.one_to_one_nat.address')"
-step "Готово: http://$IP:8080  (после создания ВМ контейнер стартует 1–2 минуты)"
+step "Готово: http://$IP  (после создания ВМ контейнер стартует 1–2 минуты)"
