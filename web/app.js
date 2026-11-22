@@ -1300,19 +1300,57 @@ async function inspectRecovery(panel, button) {
   }
 }
 
-function bindStationSources(main) {
-  const form = $('#station-data-request', main);
-  const status = $('#station-request-status', main);
-  form.addEventListener('submit', event => {
+function requestFormHTML() {
+  return `<details class="station-source">
+    <summary>Запросить метеоданные</summary>
+    <form id="station-data-request" class="station-request-form">
+      <label>Заповедник или организация<input name="recipient" required maxlength="150"></label>
+      <label>Метеостанция или набор<input name="station" required maxlength="150"></label>
+      <label>Показатели<input name="parameters" required maxlength="300" placeholder="Например, температура и влажность"></label>
+      <div class="station-request-dates">
+        <label>С даты<input name="start" type="date" required></label>
+        <label>По дату<input name="end" type="date" required></label>
+      </div>
+      <label>Почта для ответа<input name="email" type="email" required maxlength="254"></label>
+      <label>Комментарий<textarea name="comment" rows="2" maxlength="1500"></textarea></label>
+      <button class="btn" type="submit">Отправить</button>
+      <p id="station-request-status" role="status"></p>
+    </form>
+  </details>`;
+}
+
+function bindRequestForm(root) {
+  const form = $('#station-data-request', root);
+  const status = $('#station-request-status', root);
+  form.addEventListener('submit', async event => {
     event.preventDefault();
-    const { start, end } = form.elements;
-    end.setCustomValidity(start.value > end.value ? 'Дата окончания должна быть не раньше даты начала.' : '');
-    if (form.reportValidity()) status.textContent = 'Демо: форма заполнена. В рабочей версии запрос получит заповедник.';
+    const f = form.elements;
+    f.end.setCustomValidity(f.start.value > f.end.value ? 'Дата окончания должна быть не раньше даты начала.' : '');
+    if (!form.reportValidity()) return;
+    const description = [`Организация: ${f.recipient.value}`, `Станция или набор: ${f.station.value}`,
+      `Показатели: ${f.parameters.value}`, `Период: ${f.start.value} — ${f.end.value}`,
+      f.comment.value.trim() && `Комментарий: ${f.comment.value.trim()}`].filter(Boolean).join('\n');
+    const button = $('button[type=submit]', form);
+    button.disabled = true;
+    status.textContent = 'Отправляю…';
+    try {
+      const response = await fetch('/data-request', { method: 'POST',
+        body: new URLSearchParams({ email: f.email.value, description }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Не удалось отправить запрос.');
+      form.reset();
+      status.textContent = 'Запрос передан сотрудникам заповедника.';
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
   });
-  form.addEventListener('input', () => {
-    form.elements.end.setCustomValidity('');
-    status.textContent = '';
-  });
+  form.addEventListener('input', () => { form.elements.end.setCustomValidity(''); status.textContent = ''; });
+}
+
+function bindStationSources(main) {
+  bindRequestForm(main);
   const catalog = $('#public-station-catalog', main);
   const list = $('#public-station-list', catalog);
   async function loadCatalog() {
@@ -1377,27 +1415,11 @@ async function renderData(main) {
       <div class="box panel"><div class="head"><b>Наборы данных</b></div>
         <div class="dslist">${sets.map(s => `<button data-ds="${s.id}" class="${s.id === S.ds ? 'on' : ''}">${esc(s.name)}</button>`).join('')}</div>
         <div class="actions" style="padding:8px 16px"><a class="pill" href="/#weather">Исходные наблюдения</a>
-          <a class="pill" href="/data-request">Запросить данные</a>
           ${employee ? '<a class="pill" href="/employee/profile">Кабинет сотрудника</a>' : ''}</div>
         <label class="drop" id="drop" ${employee ? '' : 'hidden'}><input type="file" id="file" multiple accept=".csv,.txt,.xlsx" hidden>
           <b>Добавить файлы с метеостанции</b><br>В том же формате, например kr1_2026.csv или ame60_2022.csv — данные допишутся в ряд станции.<br>Перетащите сюда или нажмите.</label>
         <div class="station-sources">
-          <details class="station-source">
-            <summary>Запросить метеоданные с другой станции</summary>
-            <form id="station-data-request" class="station-request-form">
-              <label>Заповедник или организация<input name="recipient" required maxlength="150"></label>
-              <label>Метеостанция<input name="station" required maxlength="150"></label>
-              <label>Показатели<input name="parameters" required placeholder="Например, температура и влажность"></label>
-              <div class="station-request-dates">
-                <label>С даты<input name="start" type="date" required></label>
-                <label>По дату<input name="end" type="date" required></label>
-              </div>
-              <label>Почта для ответа<input name="email" type="email" required></label>
-              <label>Комментарий<textarea name="comment" rows="2"></textarea></label>
-              <button class="btn" type="submit">Отправить</button>
-              <p id="station-request-status" role="status"></p>
-            </form>
-          </details>
+          ${requestFormHTML()}
           <details class="station-source" id="public-station-catalog" ${UI.publicCatalogOpen ? 'open' : ''}>
             <summary>Добавить из доступных метеостанций</summary>
             <p>Открытые суточные данные NOAA GHCN Daily за 2024–2025 гг.</p>
@@ -1832,9 +1854,9 @@ function renderGuestData() {
     <div class="stack">
       <section class="box panel">
         <div class="head"><b>Наборы данных</b></div>
-        <p class="note">Публичных метеоданных пока нет.</p>
+        <p class="note">Публичных метеоданных пока нет. Оставьте запрос, и сотрудник заповедника ответит на почту.</p>
+        <div class="station-sources">${requestFormHTML()}</div>
         <div class="actions guest-actions">
-          <a class="pill" href="/data-request">Запросить данные</a>
           <a class="pill" href="/employee">Вход для сотрудника</a>
         </div>
       </section>
@@ -1843,6 +1865,7 @@ function renderGuestData() {
         <p class="note">Отчёты появятся, когда станут доступны данные наблюдений.</p>
       </section>
     </div>`;
+  bindRequestForm($('#page'));
 }
 
 (async function init() {

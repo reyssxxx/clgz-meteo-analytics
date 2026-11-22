@@ -141,34 +141,19 @@ def requests_connection() -> sqlite3.Connection:
     return conn
 
 
-def request_page(error: str = "", status: int = 200) -> HTMLResponse:
-    message = f'<p class="field-error" role="alert">{escape(error)}</p>' if error else ""
-    return page("Запросить данные", f"""<p>Укажите станцию или набор, интересующий период и параметры.
-Сотрудник получит заявку в кабинете и сможет ответить на указанный адрес.</p>
-<form class="library-form" method="post" action="/data-request">
-{message}<label>Электронная почта <input type="email" name="email" maxlength="254" required></label>
-<label>Какие данные нужны <textarea name="description" rows="5" maxlength="4000" required></textarea></label>
-<button class="button" type="submit">Отправить запрос</button></form>""", status)
-
-
-@router.get("/data-request", response_class=HTMLResponse)
+@router.get("/data-request")
 def data_request():
-    return request_page()
+    return RedirectResponse("/meteo#data", status_code=303)
 
 
 @router.post("/data-request")
 def submit_data_request(email: str = Form(max_length=254), description: str = Form(max_length=4000)):
     email, description = email.strip(), description.strip()
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email) or not description:
-        return request_page("Проверьте адрес почты и описание данных.", 400)
+        return JSONResponse({"error": "Проверьте адрес почты и описание данных."}, status_code=400)
     with closing(requests_connection()) as conn, conn:
         conn.execute("INSERT INTO requests (email, description) VALUES (?, ?)", (email, description))
-    return RedirectResponse("/data-request/sent", status_code=303)
-
-
-@router.get("/data-request/sent", response_class=HTMLResponse)
-def data_request_sent():
-    return page("Запрос отправлен", "<p>Заявка передана сотрудникам заповедника.</p>")
+    return {"ok": True}
 
 
 @router.get("/employee", response_class=HTMLResponse)
