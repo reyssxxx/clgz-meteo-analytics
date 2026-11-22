@@ -40,8 +40,11 @@ exists vpc subnet get --name "$SUBNET" || yc vpc subnet create --name "$SUBNET" 
   --zone "$ZONE" --range 10.10.0.0/24 >/dev/null
 
 step "Виртуальная машина"
+# Вход сотрудника: логин и пароль берутся из окружения, в репозиторий не попадают.
+: "${CLGZ_EMPLOYEE_USER:?задайте CLGZ_EMPLOYEE_USER}" "${CLGZ_EMPLOYEE_PASSWORD:?задайте CLGZ_EMPLOYEE_PASSWORD}"
+ENV="PORT=8080,CLGZ_EMPLOYEE_USER=$CLGZ_EMPLOYEE_USER,CLGZ_EMPLOYEE_PASSWORD=$CLGZ_EMPLOYEE_PASSWORD"
 if exists compute instance get --name "$VM"; then
-  yc compute instance update-container --name "$VM" --container-image "$IMAGE" >/dev/null
+  yc compute instance update-container --name "$VM" --container-image "$IMAGE" --container-env "$ENV" >/dev/null
 else
   yc compute instance create-with-container --name "$VM" --zone "$ZONE" \
     --platform standard-v3 --cores 2 --core-fraction 50 --memory 4GB \
@@ -49,7 +52,7 @@ else
     --network-interface "subnet-name=$SUBNET,nat-ip-version=ipv4" \
     --service-account-name "$SA" \
     --container-name "$NAME" --container-image "$IMAGE" \
-    --container-env PORT=8080 --container-restart-policy Always >/dev/null
+    --container-env "$ENV" --container-restart-policy Always >/dev/null
 fi
 
 IP="$(yc compute instance get --name "$VM" --format json | jq -r '.network_interfaces[0].primary_v4_address.one_to_one_nat.address')"
