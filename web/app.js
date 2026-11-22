@@ -107,11 +107,22 @@ function ensurePeriod() {
   if (S.kind === 'custom') {
     const [lo, hi] = dataRange();
     if (!S.cs || !S.ce) { S.cs = iso(new Date(hi.getFullYear(), 0, 1)); S.ce = iso(hi); }
-    if (parseISO(S.cs) < lo) S.cs = iso(lo);
-    if (parseISO(S.ce) > hi) S.ce = iso(hi);
+    if (parseISO(S.ce) < lo || parseISO(S.cs) > hi || S.cs > S.ce) {
+      S.cs = iso(lo);
+      S.ce = iso(hi);
+    } else {
+      if (parseISO(S.cs) < lo) S.cs = iso(lo);
+      if (parseISO(S.ce) > hi) S.ce = iso(hi);
+    }
     return;
   }
-  if (!S.y || !fits(S.kind, S.y, S.i)) Object.assign(S, latestPeriod(S.kind));
+  if (!S.y || !fits(S.kind, S.y, S.i)) {
+    Object.assign(S, latestPeriod(S.kind));
+    if (!fits(S.kind, S.y, S.i)) {
+      const [lo, hi] = dataRange();
+      Object.assign(S, { kind: 'custom', cs: iso(lo), ce: iso(hi) });
+    }
+  }
 }
 function periodParams() { const [a, b] = bounds(); return { start: iso(a), end: iso(b) }; }
 
@@ -321,6 +332,23 @@ const empty = (title, text) => `<div class="box empty"><b>${esc(title)}</b>${esc
 
 // ------------------------------------------------------------------ ОБЗОР
 const UI = { yearsMode: 'values', freq: 'MS', trendScope: '', agroPick: '', cmp: null, ref: '' };
+const stationChanges = typeof BroadcastChannel === 'function' ? new BroadcastChannel('meteo-public-stations') : null;
+let metadataRefresh = 0;
+
+async function refreshCaseStations() {
+  if (S.ds !== 'clgz') return;
+  const refresh = ++metadataRefresh;
+  const params = new URLSearchParams({ ds: S.ds, clean: S.clean });
+  const response = await fetch('/api/meta?' + params, { cache: 'no-store' });
+  if (!response.ok) throw new Error('Не удалось обновить список станций.');
+  const meta = await response.json();
+  if (refresh !== metadataRefresh || S.ds !== 'clgz') return;
+  applyMeta(meta);
+  await route();
+}
+stationChanges?.addEventListener('message', () => {
+  if (META) refreshCaseStations().catch(error => toast(error.message, true));
+});
 
 async function renderOverview(main) {
   const v = varById(S.var);
@@ -1083,7 +1111,7 @@ function bindStationSources(main) {
   });
   const catalog = $('#public-station-catalog', main);
   const list = $('#public-station-list', catalog);
-  catalog.addEventListener('toggle', async () => {
+  async function loadCatalog() {
     if (!catalog.open || list.dataset.loaded) return;
     list.dataset.loaded = '1';
     list.textContent = 'Загружаю каталог…';
@@ -1096,7 +1124,9 @@ function bindStationSources(main) {
         button.addEventListener('click', async () => {
           const station = stations.find(s => s.id === button.dataset.publicStation);
           const origin = routeSeq;
-          button.disabled = true;
+          const buttons = $$('[data-public-station]', list);
+          buttons.forEach(item => { item.disabled = true; });
+          button.textContent = station.added ? 'Удаляю…' : 'Добавляю…';
           try {
             const url = '/api/public-stations/' + encodeURIComponent(station.id);
             const response = await fetch(station.added ? url : url + '/add',
@@ -1104,14 +1134,14 @@ function bindStationSources(main) {
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Не удалось изменить список станций.');
             toast((station.added ? 'Станция удалена: ' : 'Станция добавлена: ') + station.name);
-            if (origin === routeSeq) {
-              S.ds = data.dataset;
-              await loadMeta();
-              route();
-            }
+            stationChanges?.postMessage(data.dataset);
+            if (origin === routeSeq) S.ds = data.dataset;
+            await refreshCaseStations();
           } catch (error) {
-            button.disabled = false;
             toast(error.message, true);
+          } finally {
+            buttons.forEach(item => { item.disabled = false; });
+            button.textContent = station.added ? 'Удалить' : 'Добавить';
           }
         });
       }
@@ -1119,7 +1149,13 @@ function bindStationSources(main) {
       delete list.dataset.loaded;
       if (error !== STALE) list.textContent = error.message;
     }
+  }
+  catalog.addEventListener('toggle', () => {
+    if (!catalog.isConnected) return;
+    UI.publicCatalogOpen = catalog.open;
+    if (catalog.open) loadCatalog();
   });
+  if (catalog.open) loadCatalog();
 }
 
 async function renderData(main) {
@@ -1150,7 +1186,7 @@ async function renderData(main) {
               <p id="station-request-status" role="status"></p>
             </form>
           </details>
-          <details class="station-source" id="public-station-catalog">
+          <details class="station-source" id="public-station-catalog" ${UI.publicCatalogOpen ? 'open' : ''}>
             <summary>Добавить из доступных метеостанций</summary>
             <p>Открытые суточные данные NOAA GHCN Daily за 2024–2025 гг.</p>
             <div id="public-station-list" aria-live="polite"></div>
@@ -1264,7 +1300,11 @@ async function switchDataset(id) { S.ds = id; S.station = ''; S.y = 0; await loa
 const PAGES = { overview: renderOverview, tables: renderTables, forecast: renderForecast, trends: renderTrends, compare: renderCompare, stations: renderStations, agro: renderAgro, data: renderData };
 
 async function loadMeta() {
-  META = await api('/api/meta', {}, false);
+  applyMeta(await api('/api/meta', {}, false));
+}
+
+function applyMeta(meta) {
+  META = meta;
   if (!META.stations.some(s => s.id === S.station))
     S.station = META.stations.slice().sort((a, b) => (a.end < b.end ? 1 : -1))[0].id;   // по умолчанию — самые свежие данные
   const st = META.stations.find(s => s.id === S.station);
