@@ -305,3 +305,14 @@ td .na, td.na { color: var(--ink-3); }
 .fday .fw { font-size: 13px; color: var(--ink-2); }
 .fday .fdev { font-size: 13px; font-weight: 600; color: var(--ink-2); margin-top: 2px; }
 @media (max-width: 1100px) { .fcards { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+.recovery-actions { padding: 8px 16px 0; }
+.recovery-result:empty { display: none; }
+.recovery-result p { margin: 6px 0 10px; }
+.recovery-result .tablewrap { margin: 8px 0; }
+.recovery-form { display: grid; gap: 8px; margin: 10px 0 4px; }
+.recovery-form label { display: grid; gap: 4px; }
+.recovery-form input, .recovery-form select { width: 100%; }
+.recovery-form button { justify-self: start; }
+.recovery-form textarea { width: 100%; resize: vertical; }
+.recovery-form[hidden] { display: none; }

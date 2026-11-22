@@ -898,6 +898,176 @@ function reviewHtml(review) {
   </div>`;
 }
 
+function recoveryPreviewHtml(preview) {
+  const formatDate = value => ruDate(String(value).slice(0, 10));
+  const candidates = preview.station_candidates;
+  const donors = candidates.filter(c => c.gap_days_covered && c.overlap_days && preview.parameter === 't_air');
+  return `
+    <p><b>Дней без полного значения: ${preview.missing_days} из ${preview.days}</b>.
+      Из них с неполными наблюдениями: ${preview.incomplete_days}.</p>
+    ${preview.gaps.length ? `<div class="tablewrap"><table class="t"><thead><tr><th>Пропуск</th><th class="num">Дней</th></tr></thead><tbody>
+      ${preview.gaps.slice(0, 8).map(g => `<tr><td>${formatDate(g.start)} — ${formatDate(g.end)}</td><td class="num">${g.days}</td></tr>`).join('')}
+      </tbody></table></div>` : ''}
+    ${preview.gaps.length > 8 ? '<p>Остальные интервалы войдут в черновик.</p>' : ''}
+    ${candidates.length ? `<details><summary>Покрытие других станций</summary><div class="tablewrap"><table class="t"><thead><tr><th>Станция</th>
+      <th class="num">Дней пропуска с данными</th><th class="num">Общих дней в архиве</th></tr></thead><tbody>
+      ${candidates.map(c => `<tr><td>${esc(c.station)}</td><td class="num">${c.gap_days_covered}</td><td class="num">${c.overlap_days}</td></tr>`).join('')}
+      </tbody></table></div></details>` : ''}
+    <form id="recovery-form" class="recovery-form">
+      <label>Источник<select id="recovery-source" class="field">
+        <option value="archive">Летопись природы</option>
+        ${donors.map(c => `<option value="station:${esc(c.station)}">${esc(c.station)}</option>`).join('')}
+      </select></label>
+      <div id="recovery-archive" class="recovery-form">
+        <label>Шаг записи<select id="recovery-resolution" class="field"><option value="day">Сутки</option><option value="month">Месяц</option></select></label>
+        <label>Том и страница или ссылка<input id="recovery-reference" class="field" maxlength="500"></label>
+        <label>Дата и значение, по одной строке <textarea id="recovery-values" class="field" rows="3"></textarea></label>
+      </div>
+      <div class="actions">
+        <button class="btn" type="submit">Предпросмотр восстановления</button>
+        <button class="pill" id="recovery-draft" type="button">Скачать черновик JSON</button>
+      </div>
+    </form>
+    <div id="recovery-proposal" aria-live="polite"></div>
+    <details id="recovery-saved"><summary>Сохранённые значения</summary>
+      <div class="recovery-form"><label>Шаг графика<select id="recovery-chart-step" class="field">
+        <option value="day">Сутки</option><option value="month">Месяц</option></select></label></div>
+      <div id="recovery-series"></div>
+    </details>`;
+}
+
+function recoveryRowsHtml(rows, unit) {
+  if (!rows.length) return '<p>За выбранный период нет значений.</p>';
+  return `<div class="tablewrap"><table class="t"><thead><tr><th>Дата</th><th class="num">Значение, ${esc(unit)}</th>
+    <th>Источник</th><th class="num">90% ошибок до</th></tr></thead><tbody>
+    ${rows.slice(0, 30).map(r => `<tr><td>${esc(r.resolution === 'month' ? r.date.slice(0, 7) : r.date)}</td>
+      <td class="num">${fmt(r.value, 2)}</td><td>${esc(r.source)}${r.has_observation ? ' · есть официальное значение' : ''}
+      ${r.validation_days ? `<small> · проверено на ${r.validation_days} днях</small>` : ''}</td>
+      <td class="num">${fmt(r.error90, 2)}</td></tr>`).join('')}
+    </tbody></table></div>${rows.length > 30 ? `<p>Показано 30 из ${rows.length} значений.</p>` : ''}`;
+}
+
+async function inspectRecovery(panel, button) {
+  const result = $('#recovery-result', panel);
+  button.disabled = true;
+  result.textContent = 'Проверяю покрытие…';
+  try {
+    const preview = await api('/api/recovery/preview', { var: S.var });
+    result.innerHTML = recoveryPreviewHtml(preview);
+    const find = id => $('#' + id, panel);
+    const form = find('recovery-form');
+    const source = find('recovery-source');
+    const proposal = find('recovery-proposal');
+    const step = find('recovery-resolution');
+    const saved = find('recovery-saved');
+    const invalidated = () => { proposal.replaceChildren(); };
+    const updateExample = () => {
+      const d = preview.start;
+      find('recovery-values').placeholder = `${step.value === 'month' ? d.slice(0, 7) : d}; 5,2`;
+    };
+    updateExample();
+    form.addEventListener('input', invalidated);
+    source.addEventListener('change', () => { find('recovery-archive').hidden = source.value !== 'archive'; });
+    step.addEventListener('change', updateExample);
+    const selection = () => {
+      const fromArchive = source.value === 'archive';
+      return { dataset: preview.dataset, station: preview.station, parameter: preview.parameter,
+        start: preview.start, end: preview.end, source: fromArchive ? 'archive' : 'station',
+        resolution: fromArchive ? step.value : 'day',
+        donor: fromArchive ? '' : source.value.slice('station:'.length),
+        reference: find('recovery-reference').value.trim() };
+    };
+    find('recovery-draft').addEventListener('click', () => {
+      const draft = { ...preview, status: 'draft', selection: selection() };
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([JSON.stringify(draft, null, 2) + '\n'], { type: 'application/json' }));
+      link.download = `восстановление-${preview.parameter}-${preview.start}.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    });
+
+    const refreshSaved = async () => {
+      const display = find('recovery-series');
+      const resolution = find('recovery-chart-step').value;
+      display.textContent = 'Загружаю значения…';
+      try {
+        const data = await api('/api/recovery/saved', { var: preview.parameter, resolution });
+        if (resolution !== find('recovery-chart-step').value) return;
+        const rows = data.rows.filter(r => r.resolution === resolution);
+        display.innerHTML = (data.rows.length ? `<a class="pill" href="${apiUrl('/api/recovery/report.xlsx')}">Скачать отдельный Excel</a>` : '')
+          + (rows.length ? '<div id="recovery-chart" class="chart short"></div>' : '') + recoveryRowsHtml(rows, preview.unit);
+        if (!rows.length) return;
+        const observed = data.observations;
+        const traces = [{ name: 'Наблюдения', x: observed.dates, y: observed.values, mode: 'lines+markers',
+          marker: { size: 4, color: C.ink }, connectgaps: false }];
+        for (const [method, name, color, symbol] of [['archive', 'Летопись', C.accent, 'diamond'],
+                                                   ['station_offset', 'Оценка по станции', C.warm, 'triangle-up']]) {
+          const sourceRows = rows.filter(r => r.method === method && !r.has_observation);
+          if (!sourceRows.length) continue;
+          traces.push({ name, x: sourceRows.map(r => r.date), y: sourceRows.map(r => r.value), mode: 'markers',
+            marker: { size: 8, color, symbol }, text: sourceRows.map(r => esc(r.source)),
+            hovertemplate: '%{x} · %{y}<br>%{text}<extra></extra>',
+            ...(method === 'station_offset' ? { error_y: { type: 'data', array: sourceRows.map(r => r.error90) } } : {}) });
+        }
+        plot('recovery-chart', traces, { showlegend: true, legend: { orientation: 'h' }, yaxis: { ticksuffix: ' ' + preview.unit } });
+      } catch (e) {
+        if (e !== STALE) display.textContent = e.message;
+      }
+    };
+    saved.addEventListener('toggle', () => { if (saved.open) refreshSaved(); });
+    find('recovery-chart-step').addEventListener('change', refreshSaved);
+
+    const post = async (payload, save = false) => {
+      const response = await fetch('/api/recovery/proposal?save=' + save, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Проверьте формат дат и значений.');
+      return data;
+    };
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const payload = selection();
+      proposal.textContent = 'Проверяю значения…';
+      const draftState = proposal.textContent;
+      try {
+        if (payload.source === 'archive') {
+          payload.entries = find('recovery-values').value.trim().split(/\n/).filter(line => line.trim()).map(line => {
+            const parts = line.split(';').map(part => part.trim());
+            const format = payload.resolution === 'month' ? /^\d{4}-\d{2}$/ : /^\d{4}-\d{2}-\d{2}$/;
+            if (parts.length !== 2 || !format.test(parts[0]) || !/^[+-]?\d+(?:[.,]\d+)?$/.test(parts[1])) {
+              throw new Error('Укажите дату и числовое значение через точку с запятой.');
+            }
+            return { date: parts[0] + (payload.resolution === 'month' ? '-01' : ''), value: Number(parts[1].replace(',', '.')) };
+          });
+        }
+        const data = await post(payload);
+        if (proposal.textContent !== draftState) return;
+        proposal.innerHTML = `<p><b>Предложено значений: ${data.rows.length}</b></p>` + recoveryRowsHtml(data.rows, preview.unit)
+          + data.skipped.map(r => `<p>Месяц ${r.month}: ${esc(r.reason)}</p>`).join('')
+          + (data.rows.length ? '<button class="btn" id="recovery-apply" type="button">Сохранить в отдельный ряд</button>' : '');
+        const apply = find('recovery-apply');
+        apply?.addEventListener('click', async () => {
+          apply.disabled = true;
+          try {
+            const accepted = await post({ ...payload, preview_token: data.preview_token }, true);
+            proposal.textContent = `Добавлено значений: ${accepted.saved}. Повторяющиеся записи учтены один раз.`;
+            if (saved.open) refreshSaved();
+            else saved.open = true;
+          } catch (error) {
+            proposal.textContent = error.message;
+          }
+        });
+      } catch (e) {
+        proposal.textContent = e.message;
+      }
+    });
+  } catch (e) {
+    if (e !== STALE) result.textContent = e.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function renderData(main) {
   const [sets, q] = await Promise.all([fetch('/api/datasets').then(r => r.json()), api('/api/quality', {}, false)]);
   const roles = [['', '— не использовать —'], ['__time', 'Дата и время'], ['__station', 'Станция'], ...META.all_variables.map(v => [v.id, `${v.label}, ${v.unit}`])];
@@ -915,6 +1085,15 @@ async function renderData(main) {
         <div class="actions" style="padding:8px 16px 0"><a class="btn" href="${apiUrl('/api/report.html')}">${ICON.doc}Отчёт HTML</a>
           <a class="pill" href="${apiUrl('/api/report.xlsx')}">${ICON.dl}Таблицы Excel</a></div>
         <p class="note">Все станции и файлы сразу, без интерфейса: <code>python -m meteo.batch папка</code></p></div>
+      <div class="box panel" id="recovery-panel"><div class="head"><b>Восстановление пропусков</b></div>
+        <p class="note">${esc(S.station)} · ${esc(varById(S.var).label)} · ${esc(periodLabel())}.
+          Черновик содержит интервалы и сведения об источниках. Официальный ряд хранится отдельно.</p>
+        <div class="actions recovery-actions">
+          <button class="btn" id="recovery-preview" type="button">Проверить пропуски</button>
+          <a class="pill" href="https://www.clgz.ru/node/18449" target="_blank" rel="noopener noreferrer">Летопись природы</a>
+        </div>
+        <div class="note recovery-result" id="recovery-result" aria-live="polite"></div>
+      </div>
     </div>
     <div class="stack">
       ${q.files.map((f, n) => {
@@ -948,6 +1127,9 @@ async function renderData(main) {
         </tbody></table></div></div>` : ''}
     </div>
   </div>`;
+  const recoveryPanel = $('#recovery-panel', main);
+  const recoveryButton = $('#recovery-preview', recoveryPanel);
+  recoveryButton.addEventListener('click', () => inspectRecovery(recoveryPanel, recoveryButton));
   const cz = q.completeness;
   plot('ch-comp', [{ type: 'heatmap', z: cz.z, x: cz.vars, y: cz.years, zmin: 0, zmax: 100, colorscale: [[0, '#F4E3C4'], [0.7, '#E3ECE5'], [1, C.accent]],
     showscale: false, xgap: 2, ygap: 2, hoverinfo: 'none' }],

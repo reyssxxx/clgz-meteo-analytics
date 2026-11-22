@@ -8,21 +8,26 @@ from __future__ import annotations
 
 import threading
 import uuid
+from io import BytesIO
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Literal
 from urllib.parse import quote
 
 import pandas as pd
 import plotly
+from openpyxl import Workbook
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, FiniteFloat
 
 from . import analytics as A
 from . import forecast as FC
 from . import quality as Q
+from . import recovery as R
 from . import tables as T
 from . import views as V
 from .loader import LoadReport, combine, load, station_from_filename
@@ -39,6 +44,7 @@ CASE_ID = "clgz"
 CASE_NAME = "Центрально-Лесной заповедник, урочище «Красное»"
 CASE_DIR = DATA / "clgz"
 UPLOADS = CASE_DIR / "uploads"
+RECOVERY_STORE = DATA / ".recovery" / "values.sqlite3"
 ALLOWED = {".csv", ".txt", ".xlsx"}
 
 
@@ -428,6 +434,124 @@ def quality_selection(var: str = "t_air", mode: str = "", ds: str = Common["ds"]
     return V.js({"audit": audit, "important": important.head(50), "important_total": len(important),
                  "exclusions": selected.head(20), "excluded_at_import": len(selected), "var": V.var_meta(var),
                  "source": V.var_meta(source)})
+
+
+@app.get("/api/recovery/preview")
+def recovery_preview(var: str = "t_air", ds: str = Common["ds"], station: str | None = Common["station"],
+                     start: date | None = None, end: date | None = None, clean: bool = Common["clean"]):
+    d = get(ds)
+    names = sorted(d.raw["station"].unique())
+    st = station or names[0]
+    if st not in names:
+        raise HTTPException(404, "Станция не найдена в наборе.")
+    raw, daily, _, _ = d.station(st, clean)
+    if daily.empty or var not in VARIABLES or var not in daily or not daily[var].notna().any():
+        raise HTTPException(400, "Параметр недоступен для этой станции.")
+    first = start or daily.index.min().date()
+    last = end or daily.index.max().date()
+    if first > last:
+        raise HTTPException(400, "Дата начала должна быть не позже даты окончания.")
+    return V.js(R.preview(raw, d.dailies(clean), st, var, first, last) | {"dataset": d.id})
+
+
+class RecoveryEntry(BaseModel):
+    date: date
+    value: FiniteFloat
+
+
+class RecoveryRequest(BaseModel):
+    dataset: str = CASE_ID
+    station: str
+    parameter: str
+    start: date
+    end: date
+    source: Literal["archive", "station"]
+    resolution: Literal["day", "month"] = "day"
+    donor: str = ""
+    reference: str = Field(default="", max_length=500)
+    entries: list[RecoveryEntry] = Field(default_factory=list, max_length=3660)
+    preview_token: str = ""
+
+
+def _recovery_daily(ds, station, var, start, end):
+    d = get(ds)
+    if start > end:
+        raise HTTPException(400, "Дата начала должна быть не позже даты окончания.")
+    if station not in d.raw["station"].unique():
+        raise HTTPException(404, "Станция не найдена в наборе.")
+    _, daily, _, _ = d.station(station)
+    if var not in VARIABLES or var not in daily:
+        raise HTTPException(400, "Параметр недоступен для этой станции.")
+    return d, daily
+
+
+@app.post("/api/recovery/proposal")
+def recovery_proposal(request: RecoveryRequest, save: bool = False):
+    r = request
+    with UPDATE_LOCK:
+        d, daily = _recovery_daily(r.dataset, r.station, r.parameter, r.start, r.end)
+        skipped = []
+        try:
+            if r.source == "archive":
+                if not r.entries or not r.reference.strip():
+                    raise ValueError("Укажите значения и ссылку либо том и страницу Летописи.")
+                rows = R.archive_proposal(daily, r.parameter, r.start, r.end,
+                                          [(str(row.date), row.value) for row in r.entries],
+                                          r.reference.strip(), r.resolution)
+            else:
+                if r.parameter != "t_air" or r.resolution != "day":
+                    raise ValueError("Оценка по соседней станции доступна для суточной температуры воздуха.")
+                if r.donor == r.station or r.donor not in d.raw["station"].unique():
+                    raise ValueError("Выберите другую станцию из набора.")
+                _, donor, _, _ = d.station(r.donor)
+                if "t_air" not in donor:
+                    raise ValueError("В выбранной станции нет температуры воздуха.")
+                rows, skipped = R.station_proposal(daily["t_air"], donor["t_air"], r.start, r.end, r.donor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        token = R.proposal_token(d.id, r.station, r.parameter, rows)
+        if save and token != r.preview_token:
+            raise HTTPException(409, "Предпросмотр устарел. Проверьте предложенные значения ещё раз.")
+        count = R.save(RECOVERY_STORE, d.id, r.station, r.parameter, rows) if save and rows else 0
+    return {"rows": rows, "skipped": skipped, "saved": count, "preview_token": token}
+
+
+@app.get("/api/recovery/saved")
+def recovery_saved(station: str, start: date, end: date, ds: str = CASE_ID, var: str = "t_air",
+                   resolution: Literal["day", "month"] = "day"):
+    d, daily = _recovery_daily(ds, station, var, start, end)
+    rows = R.with_observation_status(R.saved(RECOVERY_STORE, d.id, station, var, start, end), daily, var)
+    official = R.observations(daily, var, resolution)
+    first = pd.Timestamp(start)
+    if resolution == "month":
+        first = first.to_period("M").start_time
+    clock = pd.date_range(first, end, freq="MS" if resolution == "month" else "D")
+    return V.js({"rows": rows, "observations": {"dates": clock, "values": official.reindex(clock)}})
+
+
+@app.get("/api/recovery/report.xlsx")
+def recovery_xlsx(station: str, start: date, end: date, ds: str = CASE_ID, var: str = "t_air"):
+    d, daily = _recovery_daily(ds, station, var, start, end)
+    rows = R.with_observation_status(R.saved(RECOVERY_STORE, d.id, station, var, start, end), daily, var)
+    if not rows:
+        raise HTTPException(404, "За выбранный период нет сохранённых восстановленных значений.")
+    records = pd.DataFrame([{
+        "Дата": row["date"], "Шаг": "Месяц" if row["resolution"] == "month" else "Сутки",
+        "Станция": station, "Параметр": VARIABLES[var].label, "Единица": VARIABLES[var].unit,
+        "Значение": row["value"], "Метод": "Летопись" if row["method"] == "archive" else "Поправка по станции",
+        "Источник": row["source"], "MAE": row["mae"], "90% ошибок до": row["error90"],
+        "Дней проверки": row["validation_days"],
+        "Статус": "Есть официальное значение" if row["has_observation"] else "Отдельный ряд",
+    } for row in rows])
+    scope = pd.DataFrame({"Поле": ["Станция", "Показатель", "Начало", "Конец"],
+                          "Значение": [station, VARIABLES[var].label, str(start), str(end)]})
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    Q.write_review_sheets(workbook, {"Восстановленные данные": records, "Параметры выборки": scope})
+    output = BytesIO()
+    workbook.save(output)
+    return _download(output.getvalue(), "Восстановленные данные.xlsx",
+                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/api/table")
