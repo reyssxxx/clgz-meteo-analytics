@@ -430,27 +430,42 @@ function drawHeat(h) {
     colorscale: h.inverted ? DIVERGE_WET : DIVERGE, showscale: false, xgap: 2, ygap: 2, hoverinfo: 'none' }],
   { hovermode: 'closest', shapes, margin: { l: 52, r: 16, t: 76, b: 30 },
     xaxis: { tickvals: [...Array(12).keys()], ticktext: MSHORT, showgrid: false, linecolor: 'rgba(0,0,0,0)' },
-    yaxis: { autorange: 'reversed', showgrid: false, dtick: 5, linecolor: 'rgba(0,0,0,0)' } });
+    yaxis: { autorange: 'reversed', showgrid: false, dtick: h.years.length > 12 ? 5 : 1, linecolor: 'rgba(0,0,0,0)' } });
   cellFocus(el, pt => `<b>${cap(MONTHS[pt.x])} ${pt.y}</b><br>${fmt(pt.z, 1, true)} ${esc(h.unit)}` +
     `<br><span style="color:${C.ink2}">${pt.z > 0 ? (h.inverted ? 'влажнее' : 'теплее') : (h.inverted ? 'суше' : 'холоднее')} среднего</span>`,
   pt => [pt.x - .5, pt.x + .5, pt.y - .5, pt.y + .5]);
+}
+
+/* Столбики «по годам». Растут от нижнего края шкалы (а не от нуля — иначе при отрицательной температуре
+   столбик уходит вниз и обрезается), ось — целые годы, при малом числе лет столбики не раздуваются. */
+function yearBars(id, years, values, colors, ref = null, layout = {}) {
+  const f = values.filter(x => x !== null && x !== undefined);
+  const [lo, hi] = rankRange(ref === null ? f : [...f, ref]);
+  const n = years.length, y0 = Math.min(...years), y1 = Math.max(...years);
+  const span = Math.max(y1 - y0 + 1, 6);                       // минимум 6 позиций по оси — столбики не во всю ширину
+  const pad = (span - (y1 - y0 + 1)) / 2;
+  return plot(id, [{ type: 'bar', x: years, y: values.map(v => v === null ? null : v - lo), base: lo,
+    marker: { color: colors }, hoverinfo: 'none', width: 0.7 }],
+  { hovermode: 'x', bargap: .25, ...layout,
+    xaxis: { tickformat: 'd', dtick: span > 15 ? 5 : 1, range: [y0 - 0.6 - pad, y1 + 0.6 + pad], ...(layout.xaxis || {}) },
+    yaxis: { range: [lo, hi], ...(layout.yaxis || {}) } });
 }
 
 function drawRank(r) {
   if (!r.years.length) { $('#ch-rank').innerHTML = '<div class="empty">Период длиннее года: сравнивать не с чем.</div>'; return; }
   const v = r.var;
   const sorted = r.values.filter(x => x !== null).sort((a, b) => b - a);
-  const el = plot('ch-rank', [{ type: 'bar', x: r.years, y: r.values, marker: { color: r.years.map(y => y === r.selected ? C.accent : '#BFC5C2') },
-    hoverinfo: 'none' }],
-  { margin: { l: 48, r: 12, t: 10, b: 28 }, hovermode: 'x', bargap: .25,
-    yaxis: { range: v.sum ? undefined : rankRange(r.values), ticksuffix: ' ' + (v.unit.length < 3 ? v.unit : '') },
+  const el = yearBars('ch-rank', r.years, r.values, r.years.map(y => y === r.selected ? C.accent : '#BFC5C2'), r.norm, {
+    margin: { l: 48, r: 12, t: 10, b: 28 },
+    yaxis: { ticksuffix: ' ' + (v.unit.length < 3 ? v.unit : '') },
     shapes: r.norm === null ? [] : [{ type: 'line', xref: 'paper', x0: 0, x1: 1, y0: r.norm, y1: r.norm, line: { color: C.ink, width: 1.5, dash: 'dash' } }],
     annotations: r.norm === null ? [] : [{ xref: 'paper', x: 0, y: r.norm, xanchor: 'left', yanchor: 'bottom', showarrow: false,
       text: `среднее ${fmt(r.norm)} ${esc(v.unit)} ${esc(r.base_label || '')}`, bgcolor: '#fff', font: { size: 12, color: C.ink } }] });
   barFocus(el, 0, pt => {
-    const place = sorted.indexOf(pt.y) + 1;
-    const dev = r.norm === null ? '' : `, ${fmt(pt.y - r.norm, 1, true)} к среднему`;
-    return `<b>${pt.x}</b>   ${fmt(pt.y)} ${esc(v.unit)}<br><span style="color:${C.ink2}">${place}-е место из ${sorted.length}${dev}</span>`;
+    const val = r.values[pt.pointNumber];
+    const place = sorted.indexOf(val) + 1;
+    const dev = r.norm === null ? '' : `, ${fmt(val - r.norm, 1, true)} к среднему`;
+    return `<b>${pt.x}</b>   ${fmt(val)} ${esc(v.unit)}<br><span style="color:${C.ink2}">${place}-е место из ${sorted.length}${dev}</span>`;
   });
 }
 function rankRange(vals) { const f = vals.filter(x => x !== null); const lo = Math.min(...f), hi = Math.max(...f), p = (hi - lo) * .15 || 1; return [lo - p, hi + p]; }
@@ -782,11 +797,11 @@ async function renderAgro(main) {
   if (UI.agroPick && !single) {
     const xs = r.rows.map(x => x.year), ys = r.rows.map(x => x[UI.agroPick]);
     const vals = ys.filter(x => typeof x === 'number'), mean = vals.reduce((a, b) => a + b, 0) / (vals.length || 1);
-    const agEl = plot('ch-agro', [{ type: 'bar', x: xs, y: ys, marker: { color: C.accent }, hoverinfo: 'none' }],
-      { hovermode: 'x', bargap: .3, xaxis: { dtick: xs.length > 15 ? 5 : 1 }, yaxis: { range: rankRange(ys) },
-        shapes: vals.length > 2 ? [{ type: 'line', xref: 'paper', x0: 0, x1: 1, y0: mean, y1: mean, line: { color: C.ink, width: 1.5, dash: 'dash' } }] : [] });
-    barFocus(agEl, 0, pt => `<b>${pt.x}</b>   ${fmt(pt.y, Math.abs(pt.y) >= 100 ? 0 : 2)}` +
-      (vals.length > 2 ? `<br><span style="color:${C.ink2}">${fmt(pt.y - mean, Math.abs(mean) >= 100 ? 0 : 2, true)} к среднему</span>` : ''));
+    const agEl = yearBars('ch-agro', xs, ys, xs.map(() => C.accent), vals.length > 2 ? mean : null, {
+      shapes: vals.length > 2 ? [{ type: 'line', xref: 'paper', x0: 0, x1: 1, y0: mean, y1: mean, line: { color: C.ink, width: 1.5, dash: 'dash' } }] : [] });
+    barFocus(agEl, 0, pt => { const val = ys[pt.pointNumber];
+      return `<b>${pt.x}</b>   ${fmt(val, Math.abs(val) >= 100 ? 0 : 2)}` +
+        (vals.length > 2 ? `<br><span style="color:${C.ink2}">${fmt(val - mean, Math.abs(mean) >= 100 ? 0 : 2, true)} к среднему</span>` : ''); });
   }
   if (r.wind.available) {
     const cols = ['#C9DCCD', '#8DB898', '#4F8C60', C.accent, C.accent2, '#0F2A17'];
@@ -856,6 +871,42 @@ async function renderForecast(main) {
 }
 
 // ------------------------------------------------------------------ ДАННЫЕ И ОТЧЁТЫ
+/* Файлы сгруппированы по станциям: сводка по станции и раскрывающийся список файлов;
+   сопоставление колонок открывается только у выбранного файла */
+function stationCards(files, roles) {
+  const order = META.stations.map(s => s.id);
+  const groups = {};
+  files.forEach((f, n) => { (groups[f.station] = groups[f.station] || []).push({ ...f, n }); });
+  const names = Object.keys(groups).sort((a, b) => (order.indexOf(a) + 99 * (order.indexOf(a) < 0)) - (order.indexOf(b) + 99 * (order.indexOf(b) < 0)));
+  const flagText = fl => Object.entries(fl).map(([k, v]) => `${esc(varById(k).label.toLowerCase())} — ${fmt(v, 0)}`).join(', ');
+  return names.map(st => {
+    const fs = groups[st].sort((a, b) => a.name.localeCompare(b.name));
+    const years = fs.map(f => (f.name.match(/(19|20)\d{2}/) || [])[0]).filter(Boolean).map(Number);
+    const rows = fs.reduce((a, f) => a + (f.rows || 0), 0), dup = fs.reduce((a, f) => a + (f.dup || 0), 0);
+    const flagged = {};
+    fs.forEach(f => Object.entries(f.flagged || {}).forEach(([k, v]) => { flagged[k] = (flagged[k] || 0) + v; }));
+    const flagN = Object.values(flagged).reduce((a, b) => a + b, 0);
+    return `<div class="box panel stcard">
+      <div class="filehead"><b>${esc(st)}</b><span class="hint2">${fs.length} ${plural(fs.length, ['файл', 'файла', 'файлов'])}${years.length ? `, ${Math.min(...years)}–${Math.max(...years)}` : ''}</span></div>
+      <div class="filemeta"><span>строк: <b>${fmt(rows, 0)}</b></span><span>исключено по флагам: <b>${fmt(flagN, 0)}</b></span><span>строк dup_conflict: <b>${dup}</b></span></div>
+      ${flagN ? `<p class="note" style="padding-top:4px">По параметрам: ${flagText(flagged)}.</p>` : ''}
+      <details class="flist"><summary>Файлы и сопоставление колонок</summary>
+        ${fs.map(f => {
+          const cols = [...f.time, ...(f.station_column ? [f.station_column] : []), ...Object.keys(f.mapping), ...f.unmapped];
+          const fl = Object.values(f.flagged || {}).reduce((a, b) => a + b, 0);
+          return `<details class="frow" data-file="${esc(f.name)}"><summary><span class="fn">${esc(f.name.split('/').pop())}</span>
+            <span class="fr">${fmt(f.rows, 0)} строк</span><span class="fr">${fl ? `флагов ${fmt(fl, 0)}` : 'без флагов'}</span>${f.dup ? `<span class="fr">dup ${f.dup}</span>` : ''}</summary>
+            <div class="mapgrid"><div class="head2">Колонка в файле</div><div class="head2">Что в ней</div>
+            ${cols.map(col => {
+              const cur = f.time.includes(col) ? '__time' : col === f.station_column ? '__station' : (f.mapping[col] || '');
+              return `<div class="col" title="${esc(col)}">${esc(col)}</div><div class="sel"><select class="field ${cur ? '' : 'unused'}" data-col="${esc(col)}">${roles.map(([k, t]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>`;
+            }).join('')}</div>
+            <div class="actions" style="padding:8px 0 4px"><button class="btn" data-apply="${f.n}">Применить сопоставление</button></div></details>`;
+        }).join('')}
+      </details></div>`;
+  }).join('');
+}
+
 async function renderData(main) {
   const [sets, q] = await Promise.all([fetch('/api/datasets').then(r => r.json()), api('/api/quality', {}, false)]);
   const roles = [['', '— не использовать —'], ['__time', 'Дата и время'], ['__station', 'Станция'], ...META.all_variables.map(v => [v.id, `${v.label}, ${v.unit}`])];
@@ -875,18 +926,7 @@ async function renderData(main) {
         <p class="note">Все станции и файлы сразу, без интерфейса: <code>python -m meteo.batch папка</code></p></div>
     </div>
     <div class="stack">
-      ${q.files.map((f, n) => {
-        const meta = parseSummary(f.summary);
-        const cols = [...f.time, ...(f.station_column ? [f.station_column] : []), ...Object.keys(f.mapping), ...f.unmapped];
-        return `<div class="box panel" data-file="${esc(f.name)}">
-        <div class="filehead"><b>${esc(f.name)}</b><span class="sp"></span><button class="btn" data-apply="${n}">Применить сопоставление</button></div>
-        <div class="filemeta">${meta.map(([k, v]) => `<span>${esc(k)}: <b>${esc(v)}</b></span>`).join('')}</div>
-        <div class="mapgrid"><div class="head2">Колонка в файле</div><div class="head2">Что в ней</div>
-        ${cols.map(col => {
-          const cur = f.time.includes(col) ? '__time' : col === f.station_column ? '__station' : (f.mapping[col] || '');
-          return `<div class="col" title="${esc(col)}">${esc(col)}</div><div class="sel"><select class="field ${cur ? '' : 'unused'}" data-col="${esc(col)}">${roles.map(([k, t]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>`;
-        }).join('')}</div></div>`;
-      }).join('')}
+      ${stationCards(q.files, roles)}
     </div>
   </div>
   <div class="grid2 mt">
@@ -894,9 +934,10 @@ async function renderData(main) {
       ${panelTitle('Полнота данных', `${S.station}, % дней с наблюдениями`, 'Доля дней в году, за которые есть значение параметра.')}
       <div class="chart tall" id="ch-comp"></div></div>
     <div class="stack">
-      <div class="box panel"><div class="head"><b>Проверка качества</b><span>${q.issues_total} ${plural(q.issues_total, ['замечание', 'замечания', 'замечаний'])}</span></div>
+      <div class="box panel"><div class="head"><b>Дополнительная проверка</b><span>${q.issues_total} ${plural(q.issues_total, ['замечание', 'замечания', 'замечаний'])}</span></div>
         ${kinds.length ? `<div class="tablewrap"><table class="t"><tbody>${kinds.map(([k, n]) => `<tr><td>${esc({ 'Вне': 'Вне физического диапазона', 'Выброс': 'Одиночные выбросы', 'Скачок': 'Резкие скачки уровня', 'Одинаковое': 'Залипание датчика', 'Tmin': 'Tmin больше Tmax' }[k] || k)}</td><td class="num">${n}</td>
-          <td><span class="verdict ${['Вне', 'Выброс'].includes(k) ? 'warn' : ''}">${['Вне', 'Выброс'].includes(k) ? 'исключены флагами' : 'предупреждение'}</span></td></tr>`).join('')}</tbody></table></div>`
+          <td><span class="verdict">подсказка</span></td></tr>`).join('')}</tbody></table></div>
+          <p class="note">Это наши дополнительные проверки: в расчёт они не вмешиваются. Из расчётов исключаются только значения с официальными флагами качества — их число указано в карточке станции.</p>`
           : '<div class="note">Подозрительных значений не найдено.</div>'}
         <p class="note">Пропусков в ряду: ${q.gaps_total}.</p></div>
       ${q.issues.length ? `<div class="box panel"><div class="head"><b>Подозрительные значения</b><span>первые ${q.issues.length}</span></div>

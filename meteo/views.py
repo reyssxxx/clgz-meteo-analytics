@@ -12,6 +12,7 @@ import pandas as pd
 
 from . import analytics as A
 from . import insights as I
+from .loader import station_from_filename
 from .schema import STATION_PREFIXES, VARIABLES, label
 
 # категории — по месту среди тех же периодов всех лет станции (не «климатическая норма»)
@@ -161,6 +162,9 @@ def anomaly_heatmap(daily: pd.DataFrame, var: str, start, end, base) -> dict:
     val = (man["pct_of_norm"] - 100) if is_sum else man["anomaly"]
     t = pd.DataFrame({"y": man.index.year, "m": man.index.month, "v": val}).pivot_table(index="y", columns="m", values="v")
     t = t.reindex(columns=range(1, 13))
+    # пропущенные годы (у АМЕ-60 — 2000–2002) — пустые строки, иначе соседние клетки растягиваются
+    if len(t):
+        t = t.reindex(range(int(t.index.min()), int(t.index.max()) + 1))
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     sel = [[int(p.year), int(p.month)] for p in pd.period_range(start, end, freq="M")] if (end - start).days <= 400 else []
     lim = float(np.nanpercentile(np.abs(t.to_numpy()), 97)) if t.notna().any().any() else 1.0
@@ -359,8 +363,10 @@ def quality(raw_station: pd.DataFrame, daily: pd.DataFrame, issues: pd.DataFrame
                "gaps": g.head(200), "gaps_total": len(g), "issue_kinds": kinds,
                "issues": issues.head(300).assign(Параметр=issues["Параметр"].map(label)) if len(issues) else [],
                "issues_total": len(issues),
-               "files": [{"name": n, "summary": r.summary(), "mapping": r.mapping, "time": r.time_columns,
-                          "station_column": r.station_column, "unmapped": r.unmapped} for n, r in reports.items()]})
+               "files": [{"name": n, "station": station_from_filename(n), "summary": r.summary(), "mapping": r.mapping,
+                          "time": r.time_columns, "station_column": r.station_column, "unmapped": r.unmapped,
+                          "rows": r.rows_out, "flagged": {k: v for k, v in r.qc_flagged.items() if v},
+                          "dup": r.dup_conflict_rows, "encoding": r.encoding} for n, r in reports.items()]})
 
 
 def pair(raw_a, daily_a, raw_b, daily_b, name_a: str, name_b: str, var: str, start, end) -> dict:
